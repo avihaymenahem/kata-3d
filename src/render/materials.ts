@@ -244,7 +244,7 @@ export function createMaterials(): MaterialSet {
     sheen: P.M_GI!.sheen!.v, // 0.45, dispute D09, live slider
     sheenColor: new Color(C.M_GI!.sheenColor!), // 0xE8E4DA
     sheenRoughness: P.M_GI!.sheenRoughness!.v, // 0.55 — 1.0 is too diffuse for canvas
-    specularIntensity: P.M_GI!.specularIntensity!.v, // 0.35 — canvas is not glossy
+    specularIntensity: P.M_GI!.specularIntensity!.v, // 0.12 — canvas is not glossy
     ior: P.M_GI!.ior!.v, // 1.45
     anisotropy: P.M_GI!.anisotropy!.v, // 0.18, warp-aligned via B4's itemSize-4 tangent
     anisotropyRotation: 0, // the tangent IS the warp direction (§2.7)
@@ -274,7 +274,7 @@ export function createMaterials(): MaterialSet {
    * Set HERE and not in `render.ts` because it is a per-material renderer property, not one of
    * §5.6's authored PBR scalars, and B5 owns the material objects.
    */
-  M_GI.envMapIntensity = 0.3;
+  M_GI.envMapIntensity = 0.1;
 
   /* ── M_SKIN — no SSS. `SubsurfaceScatteringShader` is Phong-based AND a ShaderMaterial. ──── */
   const M_SKIN = new MeshPhysicalMaterial({
@@ -319,8 +319,8 @@ export function createMaterials(): MaterialSet {
    * stays at §5.6's 0.25 — a belt does have more fibre nap than the jacket, and that is a
    * documented value rather than an oversight.
    */
-  M_OBI.specularIntensity = 0.14;
-  M_OBI.envMapIntensity = 0.3;
+  M_OBI.specularIntensity = 0.02;
+  M_OBI.envMapIntensity = 0.1;
 
   /* ── M_FLOOR — Standard, not Physical: nothing here needs sheen. ─────────────────────────── */
   const M_FLOOR = new MeshStandardMaterial({

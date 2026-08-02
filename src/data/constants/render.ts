@@ -327,12 +327,28 @@ export const MATERIAL_PARAMS: Readonly<Record<string, Readonly<Record<string, Nu
     M_GI: Object.freeze({
       roughness: N(0.88, 'ratio', 0.12, D06_79, 'DERIVED'),
       metalness: N(0, 'ratio', 0, D06_79, 'DERIVED'),
-      sheen: A(0.45, 'ratio', 0.15, 'docs/ARCHITECTURE.md §5.6', 'ART', 'D09', [
+      /**
+       * ═══ D09, SETTLED BY CHANNEL D ═══════════════════════════════════════════════════════
+       *
+       * §2.5 shipped 0.45 explicitly as "a live knob, not an argument", recording that "only
+       * Channel D settles it" — Channel D being visual judgement rather than a citation. It has
+       * now been settled that way: the project owner reported the uniform shining three separate
+       * times, and this is the last term still producing it.
+       *
+       * Zero, not merely lower. `sheen` is a RETROREFLECTIVE lobe — it returns light towards the
+       * viewer hardest at grazing angles, which is the silhouette edge — so any non-zero value
+       * puts a bright rim around the figure on every frame, and that rim is exactly what was being
+       * reported. Spreading it (`sheenRoughness` 0.95) moved the energy without removing it.
+       *
+       * Both source alternatives are kept below. doc 05's 1.0 and doc 06's 0.35 are still what
+       * those documents say; this row now records that measurement lost to looking at it.
+       */
+      sheen: A(0, 'ratio', 0.45, 'docs/ARCHITECTURE.md §5.6', 'ART', 'D09', [
         { v: 1.0, src: 'docs/research/05-threejs-api.md §11.1', label: 'doc 05: sheen 1.0 / 0xffffff' },
         { v: 0.35, src: 'docs/research/06-rig-ik-cloth.md §7.9', label: 'doc 06: cotton fibre fuzz' },
       ]),
       sheenRoughness: N(0.95, 'ratio', 0.25, D06_79, 'DERIVED'),
-      specularIntensity: N(0.12, 'ratio', 0.2, D06_79, 'DERIVED'),
+      specularIntensity: N(0.02, 'ratio', 0.2, D06_79, 'DERIVED'),
       ior: N(1.45, 'ratio', 0.05, D06_79, 'DERIVED'),
       /** C06: doc 05 objected only that anisotropy "needs a tangent attribute" — we generate one. */
       anisotropy: A(0.18, 'ratio', 0.07, 'docs/ARCHITECTURE.md §5.6', 'ART', 'D10', [
@@ -365,7 +381,7 @@ export const MATERIAL_PARAMS: Readonly<Record<string, Readonly<Record<string, Nu
     M_OBI: Object.freeze({
       roughness: N(0.62, 'ratio', 0.08, 'docs/ARCHITECTURE.md §5.6', 'ART'),
       metalness: N(0, 'ratio', 0, 'docs/ARCHITECTURE.md §5.6', 'ART'),
-      sheen: N(0.25, 'ratio', 0.1, 'docs/ARCHITECTURE.md §5.6', 'ART'),
+      sheen: N(0, 'ratio', 0.1, 'docs/ARCHITECTURE.md §5.6', 'ART'),
       sheenRoughness: N(0.55, 'ratio', 0.15, 'docs/ARCHITECTURE.md §5.6', 'ART'),
     }),
     /** Floor. `map.anisotropy` is MANDATORY at grazing angles; the default is 1. */

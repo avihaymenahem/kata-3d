@@ -237,7 +237,12 @@ describe('§2.5 — all fourteen disputes ship as AltNums', () => {
     expect(DATA.TECHNIQUES['soto-uke-chudan']!.elbowIncludedDeg.v, 'D04 — included, not 90').toBe(62);
     expect(DATA.STANCES.zenkutsu.yawRear.v, 'D05 — 30 deg').toBe(30);
     expect(DATA.STANCES.zenkutsu.pelvisYawHanmi.v, 'D06 — 45 deg').toBe(45);
-    expect(DATA.MATERIAL_PARAMS.M_GI!.sheen!.v, 'D09 — sheen 0.45').toBe(0.45);
+    /* D09 was the one dispute §2.5 declined to settle on paper — it shipped as "a live knob, not
+     * an argument", explicitly deferred to Channel D. Channel D settled it at 0: the sheen lobe is
+     * retroreflective, so it lit the figure's silhouette on every frame and read as a glowing
+     * uniform. The assertion still pins the RESOLUTION, which is the point of this test; only the
+     * resolution changed, and `docs/ARCHITECTURE.md` §2.5 changed with it. */
+    expect(DATA.MATERIAL_PARAMS.M_GI!.sheen!.v, 'D09 — sheen settled at 0').toBe(0);
   });
 });
 

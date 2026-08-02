@@ -182,7 +182,7 @@ frame grid. The `chan` array's 480 Hz grid (2.083 ms) is fine for envelopes; eve
 | `L = 0.520 H` (02) vs `S = 0.540 H` (01) | **`L = ZENKUTSU.S.v = 0.540 H`**, derived | §2.3; 02 §1.1 mandates the rescale |
 | `h = 0.19 L` from `w = 0.385 L` (02) vs `HACHIJI.W = 0.259 H` (01) | **`EMB_H = HACHIJI.W.v/2 = 0.1295 H`**, derived | closure and σ are relative |
 | embusen datum: foot centre vs ankle | **AJC** | §2.3 |
-| gi `sheen 1.0 / 0xffffff` (05 §11.1) vs `0.35 / 0xE8E4DA` (06 §7.9) | **`sheen 0.45`, `sheenColor 0xE8E4DA`, `sheenRoughness 0.55`**, dispute `D09`, live slider | 06 argues from Filament cloth data; 05's 1.0 is undefended. Only Channel D settles it, so it ships as a live knob, not an argument. |
+| gi `sheen 1.0 / 0xffffff` (05 §11.1) vs `0.35 / 0xE8E4DA` (06 §7.9) | **`sheen 0`** (was 0.45), dispute `D09`, SETTLED | 06 argued from Filament cloth data; 05's 1.0 was undefended. It shipped as a live knob because only Channel D could settle it — and Channel D did: the retroreflective rim read as a glowing uniform on every frame, reported three times, so the knob is at zero. |
 | gi `anisotropy 0.25` (06 §7.9) vs NO (05 §11) | **`anisotropy 0.18` with an `itemSize = 4` analytic tangent** | 05's objection is "needs a tangent attribute"; we generate the geometry, so we generate the tangent — including the handedness `w`. See §2.7. |
 | zenkutsu weight 55 / 59 / 62 / 70 % front | **59 %**, dispute `D01`; metric tol from 07 (`±8`) | 01 §3.6 resolves it geometrically at `S = 0.540 H` |
 | age-uke forearm 25° vs 45° | **25°**, dispute `D03` | 03 §14.1: 45° puts the wrist at 1.036 H, above the vertex |
@@ -2032,7 +2032,7 @@ Deleted, and replaced with real geometry:
 
 | id | class | key params |
 |---|---|---|
-| `M_GI` | `MeshPhysicalMaterial` | `0xF2F0EA`, `roughness 0.78`, `metalness 0`, **`sheen 0.45`, `sheenColor 0xE8E4DA`, `sheenRoughness 0.55`** (dispute `D09`, live slider), `specularIntensity 0.35`, `ior 1.45`, `anisotropy 0.18` + `anisotropyRotation` along warp with an itemSize-4 analytic tangent (§2.7), weave `normalMap` (`NoColorSpace`, `normalScale (0.60,0.60)`), crease `normalMap` blended by the wrinkle attribute, **`side FrontSide`** |
+| `M_GI` | `MeshPhysicalMaterial` | `0xF2F0EA`, `roughness 0.78`, `metalness 0`, **`sheen 0`** (dispute `D09`, settled by Channel D), `specularIntensity 0.12`, `ior 1.45`, `anisotropy 0.18` + `anisotropyRotation` along warp with an itemSize-4 analytic tangent (§2.7), weave `normalMap` (`NoColorSpace`, `normalScale (0.60,0.60)`), crease `normalMap` blended by the wrinkle attribute, **`side FrontSide`** |
 | `M_SKIN` | `MeshPhysicalMaterial` | `roughness 0.48`, `metalness 0`, `sheen 0.15`, `sheenRoughness 0.85`, `ior 1.40`, `specularIntensity 0.6`, `normalScale (0.7,0.7)`. **No `SubsurfaceScatteringShader`** — Phong-based and a `ShaderMaterial` (05 §11.1) |
 | `M_OBI` | `MeshPhysicalMaterial` | `0x14110f`, `roughness 0.62`, `sheen 0.25`, own crease map, `FrontSide`. The black belt is a **silhouette device**: it separates jacket from trousers so stance depth reads in pure outline at low and overhead orbit angles, where value separation is all the viewer has. |
 | `M_FLOOR` | `MeshStandardMaterial` | `0x7d5636`, `roughness 0.42`, 2048² plank albedo (`SRGBColorSpace`) + `roughnessMap` + `normalMap` (`NoColorSpace`), `RepeatWrapping`, `map.anisotropy = min(8, getMaxAnisotropy())` — mandatory at grazing angles; `receiveShadow true`, `castShadow false` |

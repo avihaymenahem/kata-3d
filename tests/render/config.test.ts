@@ -399,9 +399,22 @@ describe('§5.6 — the hard material rules', () => {
     expect(MATERIAL_TONE_MAPPED.M_GI).toBe(true);
   });
 
-  it('the gi is a MeshPhysicalMaterial with non-zero sheen — that is the whole reason for it', () => {
+  /**
+   * This test used to read "…with non-zero sheen — that is the whole reason for it", and it was
+   * right to: `MeshPhysicalMaterial` costs more than `MeshStandardMaterial` and must earn it.
+   *
+   * D09 has since been settled at `sheen 0` by Channel D (the lobe is retroreflective, so it lit
+   * the silhouette on every frame and read as a glowing uniform). So the justification MOVED — it
+   * is now `anisotropy`, D10's 0.18, which is equally Physical-only and equally unavailable on
+   * Standard. The test still guards the same property, that the upgrade is paid for by something.
+   *
+   * If `anisotropy` ever also goes to zero, this material should become a `MeshStandardMaterial`
+   * and this assertion should fail loudly until someone does that.
+   */
+  it('the gi is a MeshPhysicalMaterial, and something Physical-only justifies it', () => {
     expect(MATS.M_GI).toBeInstanceOf(MeshPhysicalMaterial);
-    expect((MATS.M_GI as MeshPhysicalMaterial).sheen).toBeGreaterThan(0);
+    const gi = MATS.M_GI as MeshPhysicalMaterial;
+    expect(gi.sheen + gi.anisotropy, 'nothing Physical-only is in use').toBeGreaterThan(0);
   });
 
   it('the floor is a MeshStandardMaterial — nothing there needs sheen (doc 05 §11.1)', () => {
