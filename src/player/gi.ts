@@ -111,9 +111,10 @@ const CTOL = (k: string): number => {
 const HEM_FRAC = C('uwagiHemH'); //             0.400  jacket hem above the floor
 const BELT_FRAC = C('beltLineH'); //            0.6145 obi centreline
 /** 0.270 H — see `CTOL`. 0.494 m along this figure's arm, i.e. 80 % down a 0.273 m forearm. */
-const SLEEVE_END_FRAC = C('sleeveEndH') + 0.75 * CTOL('sleeveEndH');
+export const SLEEVE_END_FRAC = C('sleeveEndH') + 0.75 * CTOL('sleeveEndH');
 const ZUBON_HEM_FRAC = C('zubonHemH'); //       0.100  trouser hem above the floor
 const OBI_W_FRAC = C('obiWidthH'); //           0.024
+const OBI_T_FRAC = C('obiThicknessH'); //       0.003  5.5 mm through — a belt END is a ribbon
 const OBI_TAIL_FRAC = C('obiTailH'); //         0.160
 const COLLAR_W_FRAC = C('collarBandWidthH'); // 0.023
 const CHEST_EASE_FRAC = C('chestEaseH'); //     0.020  rule 1: the jacket is BOXY
@@ -551,7 +552,7 @@ function smoothRing(r: Float64Array, passes: number): void {
  * way to tell it apart from an error. Biasing the whole modulation outward costs half an amplitude
  * of extra ease, which on a garment whose defining property is looseness is not a cost.
  */
-function addFolds(r: Float64Array, S: number, amp: number, phase: number): void {
+export function addFolds(r: Float64Array, S: number, amp: number, phase: number): void {
   if (!(amp > 0)) return;
   const cols = r.length;
   let mean = 0;
@@ -574,6 +575,23 @@ interface GridRef {
   readonly rows: number;
   readonly cols: number;
   readonly wrap: boolean;
+  /**
+   * Exempt from `relaxPositions`, though NOT from the pushout or the weight smoothing.
+   *
+   * ═══ MEASURED, AND IT IS NOT SMALL ═══════════════════════════════════════════════════════
+   *
+   * The Laplacian relaxation exists to remove the pucker a per-vertex pushout leaves on a big
+   * swept panel, where a vertex's grid neighbours are 4 cm away and averaging toward them is
+   * genuinely a smoothing operation. On a strap they are 4 MILLIMETRES away, across a corner the
+   * section was authored to have, so the same average is a shrink: measured on the collar band,
+   * two passes at λ = 0.28 took the 45 mm width to 42.9 mm and crushed the 8 mm thickness to
+   * under 3 — which is precisely the "collar reads as a floating ribbon" this revision is
+   * fixing, arriving by a completely different route than the shape did.
+   *
+   * The pushout still runs, because a strap can still end up inside the body and that is an
+   * error rather than a design.
+   */
+  readonly rigid: boolean;
 }
 
 /** Which body bones a run of garment vertices may take weights — and pushout normals — from. */
@@ -600,6 +618,7 @@ class Accum {
     grid: readonly (readonly Vector3[])[],
     uvg: readonly (readonly (readonly [number, number])[])[],
     wrap: boolean,
+    rigid = false,
   ): GridRef {
     const first = this.count;
     const rows = grid.length;
@@ -624,7 +643,7 @@ class Accum {
         this.idx.push(a, b, d, b, e, d);
       }
     }
-    const ref: GridRef = { first, rows, cols, wrap };
+    const ref: GridRef = { first, rows, cols, wrap, rigid };
     this.grids.push(ref);
     return ref;
   }
@@ -805,7 +824,7 @@ function emitStrap(acc: Accum, pts: readonly StrapPt[], capLen: number): void {
     }
     uvg.push(row);
   }
-  acc.addGrid(grid, uvg, true);
+  acc.addGrid(grid, uvg, true, true);
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════════════════════════
@@ -944,7 +963,26 @@ function jacketEase(lm: GiFit, y: number): number {
   const gather =
     BELT_GATHER_FRAC * S * Math.exp(-Math.pow((y - lm.yBelt) / (0.030 * S), 2));
   const drop = Math.max(0, Math.min(1, (lm.yBelt - y) / (lm.yBelt - lm.yHem)));
-  return CHEST_EASE_FRAC * S - gather + 0.012 * S * drop;
+  /* 0.008 H of flare, down from 0.012. The skirt still opens — rule 4 — but the last ring no
+   * longer stands 2.2 cm clear of the thigh, which is what turned the hem into a rigid shelf with
+   * a lip on it. The looseness the flare was carrying is now carried by `addFolds`, which puts the
+   * same volume into the silhouette as SHAPE rather than as a uniformly larger circle. */
+  return CHEST_EASE_FRAC * S - gather + 0.008 * S * drop;
+}
+
+/**
+ * Fold depth at a given height on the jacket.
+ *
+ * Zero at the belt line, and that is doc 06 §7.10 rule 8 rather than a taste call: the obi is the
+ * one place the garment is TIGHT, `beltGatherH` pulls the jacket in there, and cloth under tension
+ * does not fold. Folding it anyway produces a ring of ripples exactly where the eye is looking for
+ * a cinch, and the belt then reads as sitting on top of a gathered skirt instead of causing it.
+ */
+function jacketFoldAmp(lm: GiFit, y: number): number {
+  const S = lm.S;
+  const atBelt = Math.exp(-Math.pow((y - lm.yBelt) / (0.045 * S), 2));
+  const skirt = Math.max(0, Math.min(1, (lm.yBelt - y) / (lm.yBelt - lm.yHem)));
+  return FOLD_AMP_FRAC * S * (0.45 + 0.85 * skirt) * (1 - 0.9 * atBelt);
 }
 
 /**
@@ -988,16 +1026,46 @@ function jacketShell(body: Body, lm: GiFit): Shell {
       r.set(rows[rows.length - 1]!.r);
     }
     smoothRing(r, 2);
+    /* Kept, so the fold can be added to the EASED radius and the result still clamped against the
+     * bare support radius below. Folding after the clamp would let a trough eat the clearance. */
+    const support = Float64Array.from(r);
     for (let j = 0; j < cols; j++) r[j] = Math.max(r[j]! + ease, 0.03 * S);
+    /* One phase for the whole jacket, so the ridges run VERTICALLY from the yoke to the hem —
+     * which is what a garment hanging off a pair of shoulders does. A per-row phase would spiral
+     * them, and a spiral on a heavy cotton skirt reads as a wrung-out towel. */
+    addFolds(r, S, jacketFoldAmp(lm, y), 0.4);
+    for (let j = 0; j < cols; j++) r[j] = Math.max(r[j]!, support[j]! + 0.004 * S);
     return { centre, axis: UP, u, v, r };
   };
 
-  /* Torso: hem -> cap base, 14 rows, ~5.5 cm apart on a 1.83 m figure. */
-  const N = 14;
+  /**
+   * The hem line, per column, relative to `yHem`.
+   *
+   * `(1 − cos 2φ)/2` is 0 at centre-front and centre-back and 1 over each hip, which is exactly
+   * where a vented uwagi rises — see `HEM_VENT_RISE_FRAC`. Decayed over 0.09 H of climb rather than
+   * applied to the hem ring alone, so the rise is a curve in the panel and not a kink in its last
+   * two rows.
+   */
+  const ventLift = (y: number, j: number): number => {
+    const phi = (j / cols) * Math.PI * 2;
+    const env = Math.max(0, 1 - (y - lm.yHem) / (0.09 * S));
+    return HEM_VENT_RISE_FRAC * S * env * env * 0.5 * (1 - Math.cos(2 * phi));
+  };
+
+  /* Torso: hem -> cap base, 18 rows, ~4.3 cm apart on a 1.83 m figure. Four more than before, all
+   * of them spent between the hip and the hem where the skirt has to bend around a raised thigh. */
+  const N = 18;
   for (let i = 0; i < N; i++) {
     const y = lm.yHem + ((yCapBase - lm.yHem) * i) / (N - 1);
     const ids = y < yHip ? idsSkirt : idsTorso;
-    rows.push(mkRing(y, ids, 0.030 * S, jacketEase(lm, y)));
+    const ring = mkRing(y, ids, 0.030 * S, jacketEase(lm, y));
+    const lift = new Float64Array(cols);
+    let any = false;
+    for (let j = 0; j < cols; j++) {
+      lift[j] = ventLift(y, j);
+      if (lift[j]! > 1e-5) any = true;
+    }
+    rows.push(any ? { ...ring, dy: lift } : ring);
   }
 
   /* Neck ring: measured off the neck alone, so the collar opening is a collar and not a cowl. */
@@ -1089,13 +1157,57 @@ function buildJacket(acc: Accum, body: Body, lm: GiFit, shell: Shell): void {
 }
 
 /**
- * A sleeve: a wide straight tube along the arm, ending at `sleeveEndH` (0.255 H from the shoulder
- * joint) — the kata cut, three-quarters down the forearm.
+ * Ring stations along the arm, as fractions of stature measured from the SHOULDER JOINT.
  *
- * The inboard end starts 2 cm INSIDE the shoulder joint, so its open ring is buried in the jacket's
- * shoulder cap rather than leaving a gap at the armhole. Its weights come from the clavicle as much
- * as the upper arm, which is what keeps the two surfaces moving together when the arm lifts: the
- * body's own clavicle->deltoid blend is inherited wholesale by the transfer.
+ * Not `i / (N - 1)`, because the two things a sleeve has to get right are not evenly spaced. The
+ * first three are inside the jacket; the next three are a tight triple 2.2 cm apart that carries
+ * the armhole seam (`SLEEVE_SEAM_SCALE`); the rest are even, because between the deltoid and the
+ * cuff nothing happens that needs resolution beyond a fold.
+ *
+ * ═══ THE FIRST STATION IS 0.032 H INSIDE THE SHOULDER, AND THAT IS THE FIX ═══════════════════
+ *
+ * It used to be 0.011 H — 2 cm — which is enough to hide the tube's open root ring and nothing
+ * else. The complaint this answers is that the sleeves read as separate objects lying next to the
+ * jacket, and a 2 cm burial is exactly what that looks like: the sleeve emerges from the jacket
+ * within one ring of its own root, so the two surfaces meet edge-to-edge at the deltoid with no
+ * overlap, no seam and a visible diameter step wherever the measured arm and the measured torso
+ * disagreed. At 0.032 H (5.9 cm) three rings are under the jacket, the pushout settles them onto
+ * the deltoid where a real armhole's seam allowance sits, and what comes out of the jacket is a
+ * sleeve that was already inside it.
+ */
+export function sleeveStations(endFrac: number): number[] {
+  const head = [-0.032, -0.014, 0.004, 0.028, 0.040, 0.052, 0.072];
+  const out = [...head];
+  const REST = 8;
+  const from = head[head.length - 1]!;
+  for (let i = 1; i <= REST; i++) out.push(from + (endFrac - from) * (i / REST));
+  return out;
+}
+
+/**
+ * Per-station radius scale that turns three of those rings into a SEAM.
+ *
+ * A set-in sleeve is two pieces of cloth stitched together and turned, so the seam itself sits a
+ * few millimetres PROUD and the cloth is pulled in on both sides of it. Modelled the other way
+ * round here — a 4.5 % dip at the seam station with the neighbours left at full radius — because
+ * that is what survives `computeVertexNormals` at this resolution: a raised ridge one ring wide
+ * gets its normals averaged away, while a dip between two full rings keeps two shading breaks and
+ * reads as a stitched line from two metres. On a 0.09 m sleeve the dip is 4 mm.
+ *
+ * It is also the difference between "the jacket has sleeves" and "the jacket has tubes near it":
+ * the seam says WHERE the sleeve was joined, and a garment with a visible join is one garment.
+ */
+const SLEEVE_SEAM_SCALE: readonly number[] = Object.freeze([
+  1, 1, 1, 1, 0.955, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+]);
+
+/**
+ * A sleeve: a wide tube along the arm, ending at `SLEEVE_END_FRAC` (0.270 H from the shoulder
+ * joint) — the long end of doc 06 §7.1's kata cut, 80 % down this figure's forearm.
+ *
+ * Its weights come from the clavicle as much as the upper arm, which is what keeps the two surfaces
+ * moving together when the arm lifts: the body's own clavicle->deltoid blend is inherited wholesale
+ * by the transfer.
  */
 function buildSleeve(acc: Accum, body: Body, lm: GiFit, h: 'L' | 'R'): void {
   const S = lm.S;
@@ -1111,14 +1223,15 @@ function buildSleeve(acc: Accum, body: Body, lm: GiFit, h: 'L' | 'R'): void {
   ]);
   const measure = regionOf(body, [`upperarm_${h}` as BoneName, `lowerarm_${h}` as BoneName]);
 
-  const t0 = -0.011 * S;
-  const t1 = SLEEVE_END_FRAC * S;
-  const N = 10;
+  const stations = sleeveStations(SLEEVE_END_FRAC);
+  const N = stations.length;
   const cols = SLEEVE_COLS;
   const rings: Ring[] = [];
   for (let i = 0; i < N; i++) {
-    const s = i / (N - 1);
-    const t = t0 + (t1 - t0) * s;
+    const t = stations[i]! * S;
+    /* Progress along the VISIBLE sleeve, so the ease ramp and the folds are indexed from the
+     * armhole rather than from a station buried in the chest. */
+    const s = Math.max(0, Math.min(1, stations[i]! / SLEEVE_END_FRAC));
     const centre = sjc.clone().addScaledVector(axis, t);
     const { u, v } = frame(axis, UP);
     const r = new Float64Array(cols);
@@ -1126,15 +1239,27 @@ function buildSleeve(acc: Accum, body: Body, lm: GiFit, h: 'L' | 'R'): void {
       r.set(rings[rings.length - 1]!.r);
     }
     smoothRing(r, 2);
+    const support = Float64Array.from(r);
     const ratio = SLEEVE_RATIO_ROOT + (SLEEVE_RATIO_CUFF - SLEEVE_RATIO_ROOT) * Math.pow(s, 0.7);
     const clear = (SLEEVE_CLEAR_ROOT + (SLEEVE_CLEAR_CUFF - SLEEVE_CLEAR_ROOT) * s) * S;
-    for (let j = 0; j < cols; j++) r[j] = Math.max(r[j]! * ratio, r[j]! + clear, 0.025 * S);
+    const seam = SLEEVE_SEAM_SCALE[i] ?? 1;
+    for (let j = 0; j < cols; j++) {
+      r[j] = Math.max(r[j]! * ratio, r[j]! + clear, 0.025 * S) * seam;
+    }
+    /* Folds grow toward the cuff. A gi sleeve is pinned at the armhole and free at the mouth, so
+     * that is the end the slack collects at — and it is the end an oi-zuki whips, which is where
+     * §7.10 says the flare is "the single most identifiable gi feature in motion". */
+    addFolds(r, S, FOLD_AMP_FRAC * S * (0.25 + 0.95 * s), 1.1);
+    for (let j = 0; j < cols; j++) r[j] = Math.max(r[j]!, support[j]! + 0.005 * S);
     rings.push({ centre, axis, u, v, r });
   }
 
   const first = acc.count;
   const cuff = rings[rings.length - 1]!;
-  emitTube(acc, [...rings, ...hemFold(cuff, axis, 0.009 * S, 0.024 * S).reverse()]);
+  /* 0.006 H of turn-back, down from 0.009: the old step pulled the cuff mouth 1.6 cm tighter than
+   * the sleeve behind it, which read as the sleeve TAPERING to a close rather than as a hem, and
+   * cost the garment most of the length it actually had. */
+  emitTube(acc, [...rings, ...hemFold(cuff, axis, 0.006 * S, 0.024 * S).reverse()]);
   acc.patch(first, arm, measure);
 }
 
@@ -1184,8 +1309,13 @@ function buildTrouser(acc: Accum, body: Body, lm: GiFit, h: 'L' | 'R'): void {
     hemPt,
   ];
 
-  const N = 13;
+  /* 17 rows, up from 13. The extra four all land between the hip and the knee, which is the span
+   * that was rendering as one uninterrupted balloon: at 13 rows that segment got four rings over
+   * 0.40 m, so the seat and the thigh were the same quad and `computeVertexNormals` averaged the
+   * whole buttock into the single hard shading facet visible down the seat from any angle. */
+  const N = 17;
   const cols = TROUSER_COLS;
+  const yKnee = KNEE_CREASE_FRAC * S;
   const rings: Ring[] = [];
   const total = path.length - 1;
   for (let i = 0; i < N; i++) {
@@ -1202,12 +1332,29 @@ function buildTrouser(acc: Accum, body: Body, lm: GiFit, h: 'L' | 'R'): void {
       r.set(rings[rings.length - 1]!.r);
     }
     smoothRing(r, 2);
+    const support = Float64Array.from(r);
     /* `s` runs hip -> hem, and the flare is strongest at the hem, so the ratio LAGS: `s^1.6` keeps
      * the thigh close and opens the last third, which is where the fabric actually swings. */
     const k = Math.pow(s, 1.6);
     const ratio = TROUSER_RATIO_HIP + (TROUSER_RATIO_HEM - TROUSER_RATIO_HIP) * k;
     const clear = (TROUSER_CLEAR_HIP + (TROUSER_CLEAR_HEM - TROUSER_CLEAR_HIP) * k) * S;
     for (let j = 0; j < cols; j++) r[j] = Math.max(r[j]! * ratio, r[j]! + clear, 0.030 * S);
+
+    /**
+     * doc 06 §7.9's knee crease. `kneeCreaseH` is 0.29 H, which on this figure is 0.530 m — the
+     * height of its knee joint to within 2 mm, so the constant is read as the HEIGHT it is rather
+     * than as a fraction along the leg, and it lands on the joint for any character.
+     *
+     * A trouser knee does two things at once and both are here: the cloth is pulled tight ACROSS
+     * the cap, and it bunches into a short stack of hard folds just above and below it. Without
+     * them a zubon leg is a cone, and a cone bending in the middle is the most obvious way for a
+     * garment to announce that it is a swept surface.
+     */
+    const kneeNear = Math.exp(-Math.pow((centre.y - yKnee) / (0.038 * S), 2));
+    const pinch = 1 - 0.05 * KNEE_CREASE_INTENSITY * kneeNear;
+    for (let j = 0; j < cols; j++) r[j] = r[j]! * pinch;
+    addFolds(r, S, FOLD_AMP_FRAC * S * (0.35 + 0.7 * k + 0.8 * kneeNear), 0.75);
+    for (let j = 0; j < cols; j++) r[j] = Math.max(r[j]!, support[j]! + 0.006 * S);
     rings.push({ centre, axis, u, v, r });
   }
   rings.reverse(); // emit bottom -> top so rows increase along `axis`
@@ -1231,97 +1378,120 @@ function buildTrouser(acc: Accum, body: Body, lm: GiFit, h: 'L' | 'R'): void {
  */
 function buildCollar(acc: Accum, body: Body, lm: GiFit, shell: Shell): void {
   const S = lm.S;
-  const halfW = (COLLAR_W_FRAC * S) / 2;
-  const halfT = 0.0032 * S;
+  /* 0.0248 H = 4.5 cm, half a tolerance above `collarBandWidthH`'s 0.023 H. A gi collar is 4–5 cm
+   * and the eye reads its WIDTH as the garment's weight, so this sits at the wide end of B1's band
+   * rather than at its centre — see `CTOL`. */
+  const halfW = ((COLLAR_W_FRAC + 0.5 * CTOL('collarBandWidthH')) * S) / 2;
+  /* 4 mm half-depth, so the band is 8 mm through — two layers of 12 oz duck plus the canvas strip
+   * that stiffens a real eri. Down from 0.0032 H (11.7 mm), which was not the problem: the band
+   * read thin because it was a FLAT four-corner ribbon lying almost flush, not because it was
+   * shallow, and `STRAP_SECTION`'s rounded profile is what fixes that. */
+  const halfT = 0.0022 * S;
 
-  const rowBot = rowAtY(shell, lm.yBelt - 0.004 * S);
   const rowTop = shell.pts.length - 1;
+  const yTop = shell.rowY[rowTop]!;
+  /**
+   * Where the two lapels cross: 0.060 H (11 cm) above the belt centreline, i.e. at the xiphoid.
+   *
+   * NOT at the belt, which is where the old band stopped. A gi's lapels cross at the solar plexus
+   * and the single visible edge then runs on DOWN across the skirt to the hem — that long diagonal
+   * over the thigh is half of what says "gi" at a distance, and cutting the band off at the obi
+   * removed it, leaving a band that started at the neck, ended in mid-chest and was attached to
+   * nothing at either end. That is the "floating band around the neck".
+   */
+  const yCross = lm.yBelt + 0.060 * S;
+  const yEnd = lm.yHem + 0.010 * S;
+  /* The right lapel's cap, tucked 0.015 H under the left one rather than butted against it. */
+  const yUnder = yCross - 0.015 * S;
 
   /**
    * The band is ASYMMETRIC, because a gi's front is.
    *
    * The right panel goes on first and the LEFT panel wraps over it, so the left panel's collared
-   * edge does not stop at the sternum — it carries on across the body and vanishes under the obi at
-   * the wearer's RIGHT hip. `frontOverlapH` (0.130 H) is exactly that carry, as ARC, so dividing it
-   * by the jacket's own mean belt radius turns it into the azimuth the lower end lands at (−40° on
+   * edge does not stop at the sternum — it carries on across the body and down to the hem at the
+   * wearer's RIGHT hip. `frontOverlapH` (0.130 H) is exactly that carry, as ARC, so dividing it by
+   * the jacket's own mean belt radius turns it into the azimuth the lower end lands at (−40° on
    * this figure) and keeps it 0.130 H if the torso profile is ever retuned.
    *
    * The right panel's edge is the mirror image, but only ABOVE the crossing: below it the left
-   * panel is on top and the right one is not there to be seen. Truncating it at the crossing is
-   * what turns a symmetric ✗ into the ✓-over-✓ a karateka's chest actually shows.
+   * panel is on top and the right one is not there to be seen. Ending it at the crossing is what
+   * turns a symmetric ✗ into the ✓-over-✓ a karateka's chest actually shows.
    */
   const beltRing = shell.rings[Math.round(rowAtY(shell, lm.yBelt))]!;
   let rBelt = 0;
   for (const x of beltRing.r) rBelt += x;
   rBelt /= beltRing.r.length;
-  const phiLow = -Math.min(0.85, Math.max(0.20, (OVERLAP_FRAC * S) / 2 / rBelt));
+  const phiHem = Math.min(0.95, Math.max(0.25, (OVERLAP_FRAC * S) / 2 / rBelt));
   /* 32° at the shoulder, the lapel angle `src/rig/giMesh.ts`'s collar sweep was authored with. */
   const phiTop = 0.56;
-  /** Azimuth as a function of the climb. `s^0.6` crosses the midline at the sternum, not the yoke. */
-  const phiAt = (s: number): number => phiLow + (phiTop - phiLow) * Math.pow(s, 0.6);
-  const rowAt = (s: number): number => rowBot + (rowTop - rowBot) * s;
-  const sCross = Math.pow(-phiLow / (phiTop - phiLow), 1 / 0.6);
 
-  const L = 12;
-  const B = 7;
-  const path: { row: number; phi: number; proud: number }[] = [];
-  /* Right band, crossing -> shoulder. Mirrored in φ and swept with NEGATIVE azimuth so the whole
-   * strip is monotone: it continues round the back of the neck the long way and comes down the
-   * left, which is what keeps `shellAt`'s wrap from folding the band back on itself. */
-  for (let i = 0; i <= L; i++) {
-    const s = sCross + (1 - sCross) * (i / L);
-    path.push({ row: rowAt(s), phi: -phiAt(s), proud: 0 });
+  /**
+   * Azimuth of the LEFT lapel's centreline at a height. Zero at the crossing by construction, so
+   * the two lapels meet exactly where they are supposed to whatever the torso profile does.
+   *
+   * `^0.8` above the crossing: the edge opens quickly off the sternum and then runs nearly
+   * vertical up the chest to the neck, which is the shape of a lapel that has to clear a collarbone
+   * on its way past. Straight below it, because below the obi there is nothing to clear.
+   */
+  const phiOf = (y: number): number =>
+    y >= yCross
+      ? phiTop * Math.pow((y - yCross) / Math.max(1e-6, yTop - yCross), 0.8)
+      : -phiHem * ((yCross - y) / Math.max(1e-6, yCross - yEnd));
+
+  /**
+   * How far the LEFT lapel rides proud of the shell, by height.
+   *
+   * Full 0.006 H below the crossing — where it is lying on top of the right lapel and has to clear
+   * that band's whole 8 mm section, not just avoid z-fighting with the jacket — and ramped to zero
+   * over the 0.09 H above it, where the two lapels have diverged and there is nothing underneath.
+   * A constant offset would float the band off the back of the neck, which is the one place on the
+   * garment where there is no second layer to justify it.
+   */
+  const proudOf = (y: number): number =>
+    0.0055 * S * Math.max(0, Math.min(1, (yCross + 0.09 * S - y) / (0.09 * S)));
+
+  const pts: StrapPt[] = [];
+  const push = (y: number, phi: number, proud: number): void => {
+    const row = rowAtY(shell, y);
+    const c = shellAt(shell, row, phi, new Vector3());
+    const n = shellNormal(shell, row, phi, new Vector3());
+    pts.push({
+      c: c.addScaledVector(n, SHELL_FRAC * S + halfT * 0.55 + proud),
+      n,
+      halfT,
+      halfW,
+    });
+  };
+
+  /* [1] RIGHT lapel, from under the crossing UP to the neck opening. Swept with NEGATIVE azimuth
+   * so the whole strip stays monotone in φ: it continues round the back of the neck the long way
+   * and comes down the left, which is what keeps `shellAt`'s wrap from folding the band back on
+   * itself. */
+  const A = 12;
+  for (let i = 0; i <= A; i++) {
+    const y = yUnder + (yTop - yUnder) * (i / A);
+    push(y, -phiOf(y), 0);
   }
+  /* [2] Round the back of the neck, at the collar opening. */
+  const B = 10;
   for (let i = 1; i <= B; i++) {
-    const s = i / B;
-    path.push({ row: rowTop, phi: -phiTop - (Math.PI * 2 - 2 * phiTop) * s, proud: 0 });
+    push(yTop, -phiTop - (Math.PI * 2 - 2 * phiTop) * (i / B), 0);
   }
-  /* Left band, shoulder -> the right hip. `0.004 H` proud is `src/rig/giMesh.ts`'s
-   * `FRONT_L_PROUD_H`: enough that the two layers never z-fight, small enough to read as cloth. */
+  /* [3] LEFT lapel, neck opening down to the HEM — the long diagonal across the skirt. Twenty
+   * samples, because this leg is 0.75 m of path against the right lapel's 0.34 m and a band that
+   * chorded across the hip would lift off the shell exactly where the thigh is about to move. */
+  const L = 20;
   for (let i = 1; i <= L; i++) {
-    const s = 1 - i / L;
-    path.push({ row: rowAt(s), phi: phiAt(s) - Math.PI * 2, proud: 0.004 * S });
-  }
-  const proud = Float64Array.from(path.map((q) => q.proud));
-
-  const grid: Vector3[][] = [];
-  const uvg: [number, number][][] = [];
-  const centres: Vector3[] = [];
-  const normals: Vector3[] = [];
-  for (const q of path) {
-    centres.push(shellAt(shell, q.row, q.phi, new Vector3()));
-    normals.push(shellNormal(shell, q.row, q.phi, new Vector3()));
-  }
-
-  let along = 0;
-  for (let i = 0; i < path.length; i++) {
-    const c0 = centres[i]!;
-    const nOut = normals[i]!;
-    const prev = centres[Math.max(0, i - 1)]!;
-    const next = centres[Math.min(path.length - 1, i + 1)]!;
-    const tan = next.clone().sub(prev);
-    if (tan.lengthSq() < 1e-12) tan.copy(UP);
-    tan.normalize();
-    if (i > 0) along += c0.distanceTo(prev);
-
-    const u = nOut.clone().addScaledVector(tan, -nOut.dot(tan)).normalize();
-    const v = new Vector3().crossVectors(tan, u).normalize();
-    const base = c0.clone().addScaledVector(u, halfT + SHELL_FRAC * S + proud[i]!);
-
-    // Corners CCW in the (u, v) plane, matching §2's winding.
-    const corner = (a: number, b: number): Vector3 =>
-      base.clone().addScaledVector(u, a * halfT).addScaledVector(v, b * halfW);
-    grid.push([corner(1, 1), corner(-1, 1), corner(-1, -1), corner(1, -1)]);
-    uvg.push([
-      [along, 0],
-      [along, halfT * 2],
-      [along, halfT * 2 + halfW * 2],
-      [along, halfT * 4 + halfW * 2],
-    ]);
+    const y = yTop + (yEnd - yTop) * (i / L);
+    push(y, phiOf(y) - Math.PI * 2, proudOf(y));
   }
 
   const first = acc.count;
-  acc.addGrid(grid, uvg, true);
+  /* Capped at both ends. The old strip was `addGrid(..., wrap = true)`, which closes the band
+   * around its own section but leaves ROW 0 and row n−1 open — two rectangular holes, one at the
+   * crossing and one at the belt, through which a FrontSide material shows the inside of the
+   * figure. `emitStrap` closes them, which also gives the lapel a finished end at the hem. */
+  emitStrap(acc, pts, halfT * 1.4);
   const torso = regionOf(body, TORSO_WEIGHT_BONES);
   /* Pushed out of the neck as well as the torso: the band behind the neck is the one piece of the
    * gi a head-bob can drive a body vertex through, and it is the piece nobody would forgive. */
@@ -1342,14 +1512,29 @@ function buildObi(acc: Accum, body: Body, lm: GiFit, shell: Shell): void {
   const halfW = (OBI_W_FRAC * S) / 2;
   const torso = regionOf(body, TORSO_WEIGHT_BONES);
 
-  const first = acc.count;
+  const bandFirst = acc.count;
 
-  /* Band: four rows across the belt width, radius read off the jacket it sits on. */
+  /**
+   * The band. Six rows, not four, because a black belt is wrapped TWICE.
+   *
+   * The extra pair buys a groove down the centreline of the band, and that groove is the whole
+   * difference between a belt and a painted stripe: it is the seam between the two wraps, it is
+   * the only horizontal line on a garment made entirely of vertical ones, and being a RECESS it
+   * reads as a shadow under every lighting angle rather than as a highlight that vanishes when the
+   * key moves. Radii are read off the jacket it sits on, so it follows the gather rather than
+   * hovering at a radius of its own.
+   */
   const rings: Ring[] = [];
-  const ys = [-halfW, -halfW * 0.55, halfW * 0.55, halfW];
   const p = new Vector3();
-  for (const dy of ys) {
-    const y = lm.yBelt + dy;
+  for (const [dyF, tuckF] of [
+    [-1.0, 0.0034],
+    [-0.68, 0.0100],
+    [-0.12, 0.0072],
+    [0.12, 0.0072],
+    [0.68, 0.0100],
+    [1.0, 0.0034],
+  ] as const) {
+    const y = lm.yBelt + halfW * dyF;
     const centre = spineAt(lm, y, new Vector3());
     const { u, v } = frame(UP, FWD);
     const r = new Float64Array(cols);
@@ -1357,78 +1542,150 @@ function buildObi(acc: Accum, body: Body, lm: GiFit, shell: Shell): void {
     for (let j = 0; j < cols; j++) {
       const phi = (j / cols) * Math.PI * 2;
       shellAt(shell, rf, phi, p);
-      /* The edges tuck back toward the jacket so the band reads as wrapped, not as a hoop. The
-       * middle has to clear `halfT + SHELL + FRONT_L_PROUD` = 0.0078 H, because the left lapel
-       * passes UNDER the obi and a belt that does not cover it leaves a white flap over the black. */
-      const tuck = Math.abs(dy) > halfW * 0.8 ? 0.0030 * S : 0.0095 * S;
-      r[j] = Math.hypot(p.x - centre.x, p.z - centre.z) + tuck;
+      /* The crown rows have to clear the LEFT lapel, which passes under the obi and stands
+       * `SHELL + halfT·1.55 + proud` = 0.0170 m proud of the jacket there. A belt that does not
+       * cover it leaves a white flap lying across the black, which was visible. */
+      r[j] = Math.hypot(p.x - centre.x, p.z - centre.z) + tuckF * S;
     }
     rings.push({ centre, axis: UP, u, v, r });
   }
   emitTube(acc, rings);
+  acc.patch(bandFirst, torso, torso);
 
-  /* Knot: a short stub of band crossing the front centre, plus two ends hanging from it. */
+  /* ── the knot ────────────────────────────────────────────────────────────────────────────────
+   *
+   * ═══ WHY THIS IS WORTH THE VERTICES ═══════════════════════════════════════════════════════
+   *
+   * It is the visual centre of the uniform. It sits at the navel, it is the only place on a gi
+   * where the cloth is bunched rather than hanging, and it is the one detail everyone who has
+   * worn one checks first — a belt without it is a hoop, and a hoop is what the last version was.
+   * doc 06 §7.3 lists `obi_knot` under the parts that are PURE SKINNING and rigid to `pelvis`, so
+   * it costs nothing at runtime beyond its own triangles.
+   *
+   * Built as what it physically is: a bunched core with one strand passing over it and tucking
+   * back under the wraps at both ends. Not a box — a box is what a stub of band looks like, and
+   * the previous one was exactly that, two quads with open sides.
+   */
+  const knotFirst = acc.count;
   const rfBelt = rowAtY(shell, lm.yBelt);
   const front = shellAt(shell, rfBelt, 0, new Vector3());
   const nOut = shellNormal(shell, rfBelt, 0, new Vector3());
-  const knotC = front.clone().addScaledVector(nOut, 0.014 * S);
+  /** Wearer's LEFT: `UP × nOut` with nOut forward is +X, and §2's frame puts LEFT on +X. */
   const across = new Vector3().crossVectors(UP, nOut).normalize();
-  {
-    const grid: Vector3[][] = [];
-    const uvg: [number, number][][] = [];
-    const kw = 0.026 * S;
-    const kh = halfW * 1.15;
-    const kd = 0.009 * S;
-    // Rows run +across -> -across, which makes `axis = -across` and `axis × nOut = UP`: §2's
-    // handedness, without which the knot renders as a hole in the belt.
-    for (let i = 0; i < 2; i++) {
-      const c = knotC.clone().addScaledVector(across, (i === 0 ? 1 : -1) * kw);
-      const corner = (a: number, b: number): Vector3 =>
-        c.clone().addScaledVector(nOut, a * kd).addScaledVector(UP, b * kh);
-      grid.push([corner(1, 1), corner(-1, 1), corner(-1, -1), corner(1, -1)]);
-      uvg.push([
-        [i * kw * 2, 0],
-        [i * kw * 2, kd * 2],
-        [i * kw * 2, kd * 2 + kh * 2],
-        [i * kw * 2, kd * 4 + kh * 2],
-      ]);
-    }
-    acc.addGrid(grid, uvg, true);
-  }
 
-  /* Two ends. Deliberately SHORT of the authored `obiTailH` and splayed off centre: with no cloth
-   * solver they are rigid to the pelvis, and a full-length pair hanging dead centre is exactly
-   * where mae-geri puts a knee. 0.62 of the authored drop clears the jacket hem and still reads. */
-  for (const side of [-1, 1] as const) {
-    const grid: Vector3[][] = [];
-    const uvg: [number, number][][] = [];
-    const tw = 0.013 * S;
-    const td = 0.0035 * S;
-    const len = OBI_TAIL_FRAC * S * 0.62;
-    const ROWS = 7;
+  const knotHalfAcross = 0.023 * S; // 8.4 cm wide — a hand's breadth, which is what a knot is
+  const knotHalfUp = 0.0135 * S; //    4.9 cm tall — one belt width, which is what it is made of
+  const knotHalfOut = 0.0072 * S; //   2.6 cm proud of the band
+
+  /* Sunk 35 % of its own depth into the band, because a knot is not an object resting on a belt,
+   * it IS the belt with the slack pulled through itself. Floating it clear leaves a shadow gap
+   * that reads as a brooch. */
+  const knotC = front.clone().addScaledVector(nOut, 0.0100 * S + knotHalfOut * 0.35);
+
+  const knotPt = (a: number, u: number, o: number, ht: number, hw: number): StrapPt => ({
+    c: knotC
+      .clone()
+      .addScaledVector(across, a)
+      .addScaledVector(UP, u)
+      .addScaledVector(nOut, o),
+    n: nOut,
+    halfT: ht,
+    halfW: hw,
+  });
+
+  /* The core: the bunched wraps, tapering and curving back toward the body at both ends. */
+  emitStrap(
+    acc,
+    [
+      knotPt(-knotHalfAcross * 0.92, 0, -0.005 * S, knotHalfOut * 0.72, knotHalfUp * 0.82),
+      knotPt(-knotHalfAcross * 0.5, 0, 0.001 * S, knotHalfOut * 0.94, knotHalfUp * 0.97),
+      knotPt(0, 0, 0, knotHalfOut, knotHalfUp),
+      knotPt(knotHalfAcross * 0.5, 0, 0.001 * S, knotHalfOut * 0.94, knotHalfUp * 0.97),
+      knotPt(knotHalfAcross * 0.92, 0, -0.005 * S, knotHalfOut * 0.72, knotHalfUp * 0.82),
+    ],
+    knotHalfOut * 1.3,
+  );
+
+  /* The strand pulled through: it rises over the core's crown and dives back UNDER the band at
+   * both ends, which is the read that turns a lump into a knot. Its ends finish inside the band
+   * (0.006 H in from a band surface 0.0100 H proud), so they are genuinely tucked, not butted. */
+  const strandHalfW = 0.0115 * S; // 4.2 cm — one belt width, the strand IS the belt
+  emitStrap(
+    acc,
+    [
+      knotPt(0, -0.030 * S, -0.006 * S, 0.0030 * S, strandHalfW * 0.86),
+      knotPt(0, -0.016 * S, 0.008 * S, 0.0042 * S, strandHalfW),
+      knotPt(0, 0, knotHalfOut * 0.62, 0.0045 * S, strandHalfW),
+      knotPt(0, 0.016 * S, 0.008 * S, 0.0042 * S, strandHalfW),
+      knotPt(0, 0.030 * S, -0.006 * S, 0.0030 * S, strandHalfW * 0.86),
+    ],
+    0.004 * S,
+  );
+
+  /**
+   * The two ends.
+   *
+   * ═══ SAMPLED ON THE JACKET, NOT DROPPED FROM THE KNOT ════════════════════════════════════
+   *
+   * The old pair hung on a straight line from the knot while the skirt they hang over FLARES, so
+   * they sank into the jacket somewhere around mid-thigh and came back out lower down. Each sample
+   * is placed on the shell at its own height and pushed out by the belt's own thickness instead,
+   * which is what a hanging tail does: it lies on whatever the garment under it is doing.
+   *
+   * ═══ AND THEY ARE NOT THE SAME LENGTH ════════════════════════════════════════════════════
+   *
+   * 0.62 and 0.55 of `obiTailH`. Both are short of the authored 0.160 H, deliberately: with no
+   * cloth solver these are rigid to the pelvis, and a full-length pair hanging dead centre is
+   * exactly where mae-geri puts a knee. The asymmetry is free realism — nobody ties a belt with
+   * two equal ends, and a matched pair is a tell that something was mirrored rather than tied.
+   */
+  const tailHalfT = (OBI_T_FRAC * S) / 2;
+  for (const [side, lenF] of [
+    [-1, 0.62],
+    [1, 0.55],
+  ] as const) {
+    const len = OBI_TAIL_FRAC * S * lenF;
+    const yTop = lm.yBelt - knotHalfUp * 0.85;
+    const ROWS = 9;
+    const pts: StrapPt[] = [];
     for (let i = 0; i < ROWS; i++) {
       const s = i / (ROWS - 1);
-      const drop = len * s;
-      const c = knotC
-        .clone()
-        .addScaledVector(across, side * (0.016 * S + 0.020 * S * s))
-        .addScaledVector(UP, -drop - halfW * 0.5)
-        .addScaledVector(nOut, -0.004 * S * s);
-      // Rows run downward, so `axis = -UP` and `axis × nOut = -across` — hence the minus.
-      const corner = (a: number, b: number): Vector3 =>
-        c.clone().addScaledVector(nOut, a * td).addScaledVector(across, -b * tw);
-      grid.push([corner(1, 1), corner(-1, 1), corner(-1, -1), corner(1, -1)]);
-      uvg.push([
-        [drop, 0],
-        [drop, td * 2],
-        [drop, td * 2 + tw * 2],
-        [drop, td * 4 + tw * 2],
-      ]);
+      const y = yTop - len * s;
+      /* ±0.14 rad is 2.7 cm off centre on a 0.19 m belt radius, so two 4.2 cm tails sit 5.4 cm
+       * apart and leave a centimetre of jacket between them. At the ±0.075 they started at they
+       * overlapped by two thirds of their width and rendered as one 8 cm slab — which is a worse
+       * failure than the missing knot was, because a single wide tail is not a thing a belt can
+       * produce and the eye has no way to read it. */
+      const phi = side * (0.14 + 0.06 * s);
+      const row = rowAtY(shell, y);
+      const c = shellAt(shell, row, phi, new Vector3());
+      const n = shellNormal(shell, row, phi, new Vector3());
+      pts.push({
+        /* Clear of the skirt by the band's own crown near the top, easing to a hair above the
+         * cloth lower down where there is no lapel underneath to clear. */
+        c: c.addScaledVector(n, (0.0090 - 0.0040 * s) * S),
+        n,
+        halfT: tailHalfT,
+        /* Tapered by a tenth over the drop. A belt end is cut square, but the two layers spread
+         * slightly where they are not held, and a perfectly parallel-sided ribbon reads as vinyl. */
+        halfW: strandHalfW * (1 - 0.10 * s),
+      });
     }
-    acc.addGrid(grid, uvg, true);
+    emitStrap(acc, pts, tailHalfT * 2.2);
   }
 
-  acc.patch(first, torso, torso);
+  /**
+   * Knot and tails take weights from the HIPS ONLY, where the band takes them from the whole
+   * torso set.
+   *
+   * doc 06 §7.3 puts `obi_knot` under "rigid to `pelvis`", and the reason shows up the moment the
+   * kata does anything: `TORSO_WEIGHT_BONES` contains both thighs, the tails hang directly in
+   * front of them, and a tail that picks up thigh weight follows whichever leg happened to be
+   * nearest in the bind pose — so mae-geri takes one tail up with the knee and leaves the other
+   * behind. The band has the opposite requirement and keeps the shared set (see its header): it is
+   * stacked millimetres off the jacket and has to move with it exactly.
+   */
+  acc.patch(knotFirst, regionOf(body, ['pelvis', 'spine_01', 'spine_02']), torso);
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════════════════════════
@@ -1620,6 +1877,7 @@ function pushOut(acc: Accum, body: Body, clear: number): void {
 function relaxPositions(acc: Accum, lambda: number): void {
   const src = Float64Array.from(acc.pos);
   for (const grid of acc.grids) {
+    if (grid.rigid) continue; // see `GridRef.rigid`
     for (let r = 1; r + 1 < grid.rows; r++) {
       for (let c = 0; c < grid.cols; c++) {
         const g = grid.first + r * grid.cols + c;

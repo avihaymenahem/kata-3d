@@ -79,7 +79,37 @@ export {
 } from './locomotion';
 export { sampleCharacterLandmarks } from './characterLandmarks';
 export { attachGi, type GiHandle, type GiMaterials, type GiStats } from './gi';
+/* Rigid to the head bone rather than skinned — see the header of `./facialHair` for the one matrix
+ * that makes a bone child and a fully head-weighted skinned vertex land in the same place. */
+export {
+  MUSTACHE_SECTION,
+  attachFacialHair,
+  faceAxes,
+  type FacialHairHandle,
+  type FacialHairStats,
+} from './facialHair';
 export { createFootIk, type FootIk, type FootIkOpts } from './footIk';
+/* Keeping the hands out of the head and the ribs. The pure half — segment-segment closest points,
+ * the capsule push-out with its three-layer normal fallback, the reach limiter and the anti-jitter
+ * filter — is exported beside the handle so it is assertable with no GLB; see the header of
+ * `./selfCollision` for the source-vs-target measurement that chose push-out over proportion
+ * matching. */
+export {
+  SELF_COLLISION_DEFAULTS,
+  capsulePush,
+  closestSegments,
+  createClosestPair,
+  createPush,
+  createSelfCollision,
+  reachScale,
+  smoothToward,
+  type ClosestPair,
+  type Push,
+  type SelfCollision,
+  type SelfCollisionArmStats,
+  type SelfCollisionOpts,
+  type SelfCollisionStats,
+} from './selfCollision';
 /* The hand shapes no capture supplies. The pure half — the doc 03 §12 angle table, the palm-plane
  * axis derivation and the blend curve — is exported alongside the handle so it can be asserted with
  * no GLB; see the header of `./handShape` for why the axis is measured and never named. */

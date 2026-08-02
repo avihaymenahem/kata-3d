@@ -61,8 +61,9 @@
  *      a 43 mm metacarpal, which is not a margin floating point can flip.
  *
  * The answer, on both hands, is that the palm faces world −Y at bind — the ordinary palms-down
- * T-pose — and every curl axis in this file is `swingAxis(alongBone, palmFacing)` derived from that.
- * Nothing here names X, Y or Z.
+ * T-pose — and every FINGER curl axis in this file is `swingAxis(alongBone, palmFacing)` derived
+ * from that. The thumb turns about a different axis for a reason of its own; see `ThumbCurl`.
+ * Nothing here names X, Y or Z, on either digit.
  *
  * ═══ WHY THE POSES ARE PRECOMPUTED QUATERNIONS AND THE BLEND IS A SLERP ══════════════════════
  *
@@ -76,9 +77,11 @@
  * the moment a clip stopped supplying finger tracks.
  *
  * The blend is a SLERP and not a lerp of the angles, for the reason `src/solve/hand.ts` gives:
- * interpolating a 45° thumb adduction as Euler components takes the joint through a different path
- * than the shortest arc, and on `shuto` — where the thumb tucks across the palm — that path passes
- * through the fingers.
+ * interpolating a large thumb swing as Euler components takes the joint through a different path
+ * than the shortest arc, and between `seiken` and `shuto` — which move the thumb from folded over
+ * the fist to laid along the blade, 74° apart at the metacarpal — that path passes through the
+ * fingers. It also matters that the two shapes' thumb rotations are about DIFFERENT axes, so there
+ * is no common angle to interpolate even in principle; the quaternions are the only shared space.
  *
  * ═══ WHY IT BLENDS AT ALL ════════════════════════════════════════════════════════════════════
  *
@@ -188,7 +191,7 @@ export const HAND_SHAPES: Readonly<Record<HandShapeId, HandShapeSpec>> = Object.
    * doc 03 §12.1 — MCP 88, PIP 105, DIP 72. The fingers are the doc's, unchanged.
    *
    * The thumb is not, and the numbers are CALIBRATED against this rig rather than authored: swept
-   * over aim 0.2–0.5 × MCP 30–60° × IP 50–80°, `(0.25, 35, 80)` puts the thumb tip 25 mm from the
+   * over aim 0.2–0.5 × MCP 30–60° × IP 50–80°, `(0.2, 30, 80)` puts the thumb tip 25 mm from the
    * middle phalanges of the folded index and middle fingers and 18 mm PROUD of them — resting on
    * the fist rather than sunk into it. Most of the fold sits in the last joint because most of the
    * excess length is out there; a bigger share at the MCP drives the tip through the fingers
@@ -200,7 +203,7 @@ export const HAND_SHAPES: Readonly<Record<HandShapeId, HandShapeSpec>> = Object.
    */
   seiken: Object.freeze({
     finger: Object.freeze({ mcpDeg: 88, pipDeg: 105, dipDeg: 72 }),
-    thumb: Object.freeze({ aim: 0.25, mcpFlexDeg: 35, ipFlexDeg: 80 }),
+    thumb: Object.freeze({ aim: 0.2, mcpFlexDeg: 30, ipFlexDeg: 80 }),
     spread: 0,
   }),
 
