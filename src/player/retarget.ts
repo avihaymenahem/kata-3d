@@ -10,30 +10,74 @@
  *
  * ═══ WHY NOT `SkeletonUtils.retargetClip` ════════════════════════════════════════════════════
  *
- * three ships one, and it assumes the two skeletons share a bind pose. These do not: BVH rests in
- * a T-pose with limbs down the world axes, Rigify rests in a relaxed A-pose. Feed it mismatched
- * binds and every limb inherits the difference as a constant twist — arms rotated inside the torso,
- * knees inverted. The bind mismatch IS the problem, so it has to be in the formula.
+ * three ships one, and it assumes the two skeletons share a bind pose. These do not, and not by a
+ * little. Measured: `AnimLib.glb`'s Rigify rests in a clean T-pose, both arms horizontal along ±X
+ * with the palms down. `karate.bvh` rests with the upper arms out and the forearms hanging
+ * straight down — a goalpost, elbows at 90°. `heian-nidan.bvh` rests with the LEFT arm straight up
+ * and the RIGHT arm straight down, which is not a pose a body can hold and is the one place that
+ * file is not mirror-symmetric. Feed any of those to a bind-difference retarget and every limb
+ * inherits the mismatch as a constant twist — arms rotated inside the torso, knees inverted. The
+ * bind mismatch IS the problem, so it has to be in the formula.
  *
- * ═══ THE FORMULA — MATCH DIRECTIONS, NOT DELTAS ══════════════════════════════════════════════
+ * ═══ THE FORMULA — MATCH FRAMES, NOT DELTAS ══════════════════════════════════════════════════
  *
- * For each mapped joint, using `a` for the bone's local axis toward its child (see `SEGMENT_AXES`):
+ * For each mapped joint, using `a` for the bone's local axis toward its child and `r` for its ROLL
+ * REFERENCE (see `SEGMENT_AXES_*` and `./boneBasis`):
  *
- *     axisAlign      = minimalArc(a_tgt -> a_src)          // constant, computed once
- *     tgtWorld(t)    = srcWorld(t) * axisAlign             // so tgtWorld * a_tgt == srcWorld * a_src
- *     tgtLocal(t)    = tgtParentWorld(t)⁻¹ * tgtWorld(t)   // back to a storable local rotation
+ *     B          = orthonormalFrame(a, r)                  // per rig, constant, computed once
+ *     axisAlign  = B_src * B_tgt⁻¹                         // so tgtWorld * B_tgt == srcWorld * B_src
+ *     tgtWorld(t)= srcWorld(t) * axisAlign
+ *     tgtLocal(t)= tgtParentWorld(t)⁻¹ * tgtWorld(t)       // back to a storable local rotation
  *
  * The obvious alternative — transfer the DELTA FROM BIND, `tgtWorld = srcWorld * srcBind⁻¹ *
  * tgtBind` — was tried first and is wrong here. Working through it, the target segment points the
  * right way only when `tgtBind * a_tgt == srcBind * a_src`, i.e. only when the two rigs already
  * agree on their rest DIRECTIONS. Legs satisfy that by luck (both rigs hang them down) and matched
- * to 0.01; arms do not (BioVision rests in a T-pose, Rigify in an A-pose) and came out inverted,
- * pointing straight up. Direction matching has no such precondition. Its one blind spot is twist
- * about the bone's own axis, which a direction cannot determine and which `minimalArc` declines to
- * invent.
+ * to 0.01; arms do not and came out inverted, pointing straight up. Frame matching has no such
+ * precondition.
  *
- * Verified: 0.00° mean segment error over the full clip, and 0° between the baked value and what
- * playback reproduces.
+ * ═══ WHY A SECOND AXIS, WHEN THE FIRST ONE ALREADY MEASURED 0.00° ════════════════════════════
+ *
+ * Because a direction is not an orientation. One axis fixes two of three degrees of freedom, and
+ * the third — TWIST ABOUT THE BONE — is exactly the visible quantity at the two ends of the body:
+ * which way a palm faces, which way a sole rolls. The previous build resolved it with
+ * `setFromUnitVectors`, whose shortest arc is a tie-break and not an answer.
+ *
+ * For most of the skeleton the tie-break was accidentally RIGHT, and that is worth recording so
+ * nobody re-derives it. Where the two rigs' rest poses differ only by a rotation about the
+ * LEFT-RIGHT axis — pelvis, all three spine joints, neck, both thighs, both shins, both feet — the
+ * shortest arc turns in exactly that plane and carries the anatomical reference along with it.
+ * Measured on `heian-nidan.bvh`, twist error on all eleven of those bones was already 0.00–0.06°
+ * before this change and is 0.00° after it. In particular THE ANKLES WERE NEVER BROKEN BY THIS
+ * FILE: the source's sole normal reached the character's foot to 0.06°, and if a foot looks wrong
+ * on screen the cause is the capture or `./footIk`, not the alignment.
+ *
+ * It is the ARMS that the tie-break got wrong, and it got them wrong ASYMMETRICALLY, which is why
+ * the failure reads as anatomically impossible rather than as a uniform offset. `heian-nidan.bvh`
+ * rests with its LEFT arm straight up (+Z) and its RIGHT arm straight down (−Z) — the one place
+ * the file is not mirror-symmetric — so the two shortest arcs turn about opposite axes and land
+ * the two palms in mirror-opposite places. Measured at the take's extended chudan zuki, where
+ * Shotokan puts the fist palm-down: the fist was 179.5° and 151.8° from palm-down on the right,
+ * 22.3° and 96.1° on the left. Right fist upside down, left fist roughly right.
+ *
+ * After: 11.6° / 16.2° right, 24.4° / 49.3° left. Mean over those four instants 112.4° -> 25.4°,
+ * worst 179.5° -> 49.3°.
+ *
+ * Direction accuracy is unchanged, which is the point of `orthonormalFrame` keeping the primary
+ * axis as its first basis vector: 0.00° mean segment error over the full clip both before and
+ * after, worst-case 0.03° -> 0.04° (float noise from one extra matrix round trip), and 0° between
+ * the baked value and what playback reproduces.
+ *
+ * ═══ WHAT THE ARM NUMBER ABOVE IS NOT ════════════════════════════════════════════════════════
+ *
+ * It is not zero, and it cannot be. The reference the arms align on is the ELBOW'S BEND PLANE, and
+ * this capture's rest arm is dead straight, so the plane is not in its bind — it is measured from
+ * the take (`bendFromMotion`). That recovers the plane, not the capture's rest PRONATION, which
+ * nothing in the file records: the alignment therefore reads "the source at its mean forearm roll
+ * sits where the character's bind sits". For a kata, where the fist is pronated most of the time,
+ * that is close to right, and the ~25° residual is what "close to" costs. A capture with a
+ * different roll distribution would land differently, and the honest fix is a source that names
+ * its own palm — a thumb, a knuckle, any second joint in the hand.
  *
  * ═══ WHAT THIS DOES NOT FIX: THE SOURCE ══════════════════════════════════════════════════════
  *
@@ -65,6 +109,7 @@ import {
 import { BVHLoader } from 'three/examples/jsm/loaders/BVHLoader.js';
 
 import type { BoneName } from '../contracts';
+import { bendPlaneNormal, frameAlign } from './boneBasis';
 import type { Character } from './character';
 
 /* ═══════════════════════════════════════════════════════════════════════════════════════════════
@@ -121,32 +166,57 @@ export const BVH_TO_CONTRACT: Readonly<Record<string, BoneName>> = Object.freeze
  * `tgtChild` names the target's DIRECT child, which is not always the counterpart of the source's:
  * BioVision goes `Hips -> Chest` where Rigify goes `DEF-hips -> DEF-spine001`. What has to match is
  * the DIRECTION the segment points, not the joint's name.
+ *
+ * ═══ `roll` — THE SECOND AXIS ════════════════════════════════════════════════════════════════
+ *
+ * A direction alone leaves the twist about it free (see `./boneBasis`). `roll` names the ANATOMICAL
+ * reference that pins it, and the name has to mean the same thing on both rigs or the cure is worse
+ * than the disease:
+ *
+ *   `hipLine`  left hip joint -> right hip joint. Both rigs rest with the pelvis square and the
+ *              spine untwisted, so this is the same physical direction on each. Perpendicular to
+ *              every spine and leg segment, which is what makes it usable there.
+ *   `standUp`  knee -> hip: the STANDING axis, i.e. the floor normal for a rig that rests standing.
+ *              Used on the foot, where it says "the sole faces the floor" — the one statement that
+ *              fixes ankle roll. NOT used up the leg or spine, where it is parallel to the segment.
+ *   `bendOut`  the bend plane of the joint at this bone's FAR end (upper arm -> the elbow).
+ *   `bendIn`   the bend plane of the joint at this bone's NEAR end (forearm -> the elbow).
+ *              Same plane, read in two different bones' frames. The elbow is a hinge, so its plane
+ *              is a property of the arm and not of the pose.
+ *   `none`     no shared reference exists — fall back to single-axis and admit the twist is a
+ *              guess. Cheaper than a wrong reference, which looks deliberate.
  */
-type SegmentTable = Readonly<Record<string, { srcChild: string; tgtChild: BoneName }>>;
+type RollRef = 'hipLine' | 'standUp' | 'bendOut' | 'bendIn' | 'none';
+
+type SegmentTable = Readonly<
+  Record<string, { srcChild: string; tgtChild: BoneName; roll: RollRef }>
+>;
 
 const SEGMENT_AXES_BIOVISION: SegmentTable =
   Object.freeze({
-    Hips: { srcChild: 'Chest', tgtChild: 'spine_01' },
-    Chest: { srcChild: 'Neck', tgtChild: 'spine_03' },
-    Neck: { srcChild: 'Head', tgtChild: 'head' },
+    Hips: { srcChild: 'Chest', tgtChild: 'spine_01', roll: 'hipLine' },
+    Chest: { srcChild: 'Neck', tgtChild: 'spine_03', roll: 'hipLine' },
+    Neck: { srcChild: 'Head', tgtChild: 'head', roll: 'hipLine' },
 
-    LeftCollar: { srcChild: 'LeftShoulder', tgtChild: 'upperarm_L' },
-    LeftShoulder: { srcChild: 'LeftElbow', tgtChild: 'lowerarm_L' },
-    LeftElbow: { srcChild: 'LeftWrist', tgtChild: 'hand_L' },
-    LeftWrist: { srcChild: 'ENDSITE', tgtChild: 'fingers_prox_L' },
+    LeftCollar: { srcChild: 'LeftShoulder', tgtChild: 'upperarm_L', roll: 'none' },
+    LeftShoulder: { srcChild: 'LeftElbow', tgtChild: 'lowerarm_L', roll: 'bendOut' },
+    LeftElbow: { srcChild: 'LeftWrist', tgtChild: 'hand_L', roll: 'bendIn' },
+    /* The wrist has no shared reference: BioVision's hand is one bone with an end site and no
+     * thumb, so nothing on the source names the palm. Direction-matched, twist guessed. */
+    LeftWrist: { srcChild: 'ENDSITE', tgtChild: 'fingers_prox_L', roll: 'none' },
 
-    RightCollar: { srcChild: 'RightShoulder', tgtChild: 'upperarm_R' },
-    RightShoulder: { srcChild: 'RightElbow', tgtChild: 'lowerarm_R' },
-    RightElbow: { srcChild: 'RightWrist', tgtChild: 'hand_R' },
-    RightWrist: { srcChild: 'ENDSITE', tgtChild: 'fingers_prox_R' },
+    RightCollar: { srcChild: 'RightShoulder', tgtChild: 'upperarm_R', roll: 'none' },
+    RightShoulder: { srcChild: 'RightElbow', tgtChild: 'lowerarm_R', roll: 'bendOut' },
+    RightElbow: { srcChild: 'RightWrist', tgtChild: 'hand_R', roll: 'bendIn' },
+    RightWrist: { srcChild: 'ENDSITE', tgtChild: 'fingers_prox_R', roll: 'none' },
 
-    LeftHip: { srcChild: 'LeftKnee', tgtChild: 'calf_L' },
-    LeftKnee: { srcChild: 'LeftAnkle', tgtChild: 'foot_L' },
-    LeftAnkle: { srcChild: 'ENDSITE', tgtChild: 'ball_L' },
+    LeftHip: { srcChild: 'LeftKnee', tgtChild: 'calf_L', roll: 'hipLine' },
+    LeftKnee: { srcChild: 'LeftAnkle', tgtChild: 'foot_L', roll: 'hipLine' },
+    LeftAnkle: { srcChild: 'ENDSITE', tgtChild: 'ball_L', roll: 'standUp' },
 
-    RightHip: { srcChild: 'RightKnee', tgtChild: 'calf_R' },
-    RightKnee: { srcChild: 'RightAnkle', tgtChild: 'foot_R' },
-    RightAnkle: { srcChild: 'ENDSITE', tgtChild: 'ball_R' },
+    RightHip: { srcChild: 'RightKnee', tgtChild: 'calf_R', roll: 'hipLine' },
+    RightKnee: { srcChild: 'RightAnkle', tgtChild: 'foot_R', roll: 'hipLine' },
+    RightAnkle: { srcChild: 'ENDSITE', tgtChild: 'ball_R', roll: 'standUp' },
   });
 
 /**
@@ -192,29 +262,31 @@ const CONTRACT_RMOCAP: Readonly<Record<string, BoneName>> = Object.freeze({
 });
 
 const SEGMENT_AXES_RMOCAP: SegmentTable = Object.freeze({
-  Hips: { srcChild: 'SpineLow', tgtChild: 'spine_01' },
-  SpineLow: { srcChild: 'SpineMid', tgtChild: 'spine_02' },
-  SpineMid: { srcChild: 'Chest', tgtChild: 'spine_03' },
-  Chest: { srcChild: 'Neck', tgtChild: 'neck_01' },
-  Neck: { srcChild: 'Head', tgtChild: 'head' },
+  Hips: { srcChild: 'SpineLow', tgtChild: 'spine_01', roll: 'hipLine' },
+  SpineLow: { srcChild: 'SpineMid', tgtChild: 'spine_02', roll: 'hipLine' },
+  SpineMid: { srcChild: 'Chest', tgtChild: 'spine_03', roll: 'hipLine' },
+  Chest: { srcChild: 'Neck', tgtChild: 'neck_01', roll: 'hipLine' },
+  Neck: { srcChild: 'Head', tgtChild: 'head', roll: 'hipLine' },
 
-  LeftShoulder: { srcChild: 'LeftArm', tgtChild: 'upperarm_L' },
-  LeftArm: { srcChild: 'LeftForearm', tgtChild: 'lowerarm_L' },
-  LeftForearm: { srcChild: 'LeftHand', tgtChild: 'hand_L' },
-  LeftHand: { srcChild: 'ENDSITE', tgtChild: 'fingers_prox_L' },
+  LeftShoulder: { srcChild: 'LeftArm', tgtChild: 'upperarm_L', roll: 'none' },
+  LeftArm: { srcChild: 'LeftForearm', tgtChild: 'lowerarm_L', roll: 'bendOut' },
+  LeftForearm: { srcChild: 'LeftHand', tgtChild: 'hand_L', roll: 'bendIn' },
+  /* `LeftHand` is a LEAF here — 20 joints, no fingers, no end site — so it has no direction to
+   * match and is not driven at all. See the note at the `continue` in the pair loop. */
+  LeftHand: { srcChild: 'ENDSITE', tgtChild: 'fingers_prox_L', roll: 'none' },
 
-  RightShoulder: { srcChild: 'RightArm', tgtChild: 'upperarm_R' },
-  RightArm: { srcChild: 'RightForearm', tgtChild: 'lowerarm_R' },
-  RightForearm: { srcChild: 'RightHand', tgtChild: 'hand_R' },
-  RightHand: { srcChild: 'ENDSITE', tgtChild: 'fingers_prox_R' },
+  RightShoulder: { srcChild: 'RightArm', tgtChild: 'upperarm_R', roll: 'none' },
+  RightArm: { srcChild: 'RightForearm', tgtChild: 'lowerarm_R', roll: 'bendOut' },
+  RightForearm: { srcChild: 'RightHand', tgtChild: 'hand_R', roll: 'bendIn' },
+  RightHand: { srcChild: 'ENDSITE', tgtChild: 'fingers_prox_R', roll: 'none' },
 
-  LeftThigh: { srcChild: 'LeftLeg', tgtChild: 'calf_L' },
-  LeftLeg: { srcChild: 'LeftFoot', tgtChild: 'foot_L' },
-  LeftFoot: { srcChild: 'ENDSITE', tgtChild: 'ball_L' },
+  LeftThigh: { srcChild: 'LeftLeg', tgtChild: 'calf_L', roll: 'hipLine' },
+  LeftLeg: { srcChild: 'LeftFoot', tgtChild: 'foot_L', roll: 'hipLine' },
+  LeftFoot: { srcChild: 'ENDSITE', tgtChild: 'ball_L', roll: 'standUp' },
 
-  RightThigh: { srcChild: 'RightLeg', tgtChild: 'calf_R' },
-  RightLeg: { srcChild: 'RightFoot', tgtChild: 'foot_R' },
-  RightFoot: { srcChild: 'ENDSITE', tgtChild: 'ball_R' },
+  RightThigh: { srcChild: 'RightLeg', tgtChild: 'calf_R', roll: 'hipLine' },
+  RightLeg: { srcChild: 'RightFoot', tgtChild: 'foot_R', roll: 'hipLine' },
+  RightFoot: { srcChild: 'ENDSITE', tgtChild: 'ball_R', roll: 'standUp' },
 });
 
 export interface BvhProfile {
@@ -322,6 +394,243 @@ function bindWorld(skeleton: Skeleton): BindPose {
   return { q, p };
 }
 
+/* ═══════════════════════════════════════════════════════════════════════════════════════════════
+ * Roll references — the second axis, resolved from each rig's OWN geometry
+ * ═══════════════════════════════════════════════════════════════════════════════════════════════ */
+
+/**
+ * Everything needed to answer "which way does this bone's roll reference point, in its own frame".
+ *
+ * Held per rig, and every number in it comes from that rig's bind pose — never from a world axis
+ * constant. `standUp` is the rig's own leg, not `(0,1,0)`: the BVH rests Z-up and the character
+ * Y-up, and a hard-coded axis would silently mean "backwards" on one of them.
+ */
+interface RollRefs {
+  readonly bind: BindPose;
+  /** Left hip joint -> right hip joint, world at bind. */
+  readonly hipLine: Vector3 | null;
+  /** Knee -> hip, world at bind: the standing axis, i.e. the floor normal of a rig at rest. */
+  readonly standUp: Vector3 | null;
+  /** Elbow bend-plane normal, ALREADY in the named bone's own local frame. */
+  readonly bend: ReadonlyMap<string, Vector3>;
+}
+
+/** The whole-body references, averaged over both sides so one missing bone cannot skew them. */
+function bodyRefs(
+  pos: ReadonlyMap<string, Vector3>,
+  boneNameFor: (c: BoneName) => string | null,
+): { hipLine: Vector3 | null; standUp: Vector3 | null } {
+  const at = (c: BoneName): Vector3 | null => {
+    const n = boneNameFor(c);
+    return n === null ? null : (pos.get(n) ?? null);
+  };
+  const hipL = at('thigh_L');
+  const hipR = at('thigh_R');
+  const kneeL = at('calf_L');
+  const kneeR = at('calf_R');
+
+  let hipLine: Vector3 | null = null;
+  if (hipL !== null && hipR !== null) {
+    const v = hipR.clone().sub(hipL);
+    if (v.lengthSq() > 1e-12) hipLine = v.normalize();
+  }
+
+  const up = new Vector3();
+  if (hipL !== null && kneeL !== null) up.add(hipL).sub(kneeL);
+  if (hipR !== null && kneeR !== null) up.add(hipR).sub(kneeR);
+  const standUp = up.lengthSq() > 1e-12 ? up.normalize() : null;
+
+  return { hipLine, standUp };
+}
+
+/** The three joints whose triangle is one bone's bend plane, named on one rig. */
+interface BendTriple {
+  /** Whose local frame the normal is stored in. */
+  readonly bone: string;
+  readonly joints: readonly [string, string, string];
+}
+
+/**
+ * Which triangle each `bendOut`/`bendIn` bone reads, derived from the segment table rather than
+ * written out again — one table stays one table, and the two rigs' chains cannot drift apart.
+ *
+ * `bendOut` on bone A takes (A, its segment child, that child's segment child); `bendIn` on bone B
+ * takes (whatever has B as its segment child, B, B's segment child). Both name the SAME three
+ * joints and therefore the same plane, which is the whole point — the elbow's plane read once in
+ * the humerus's frame and once in the forearm's.
+ */
+function bendTriples(profile: BvhProfile): { src: BendTriple[]; tgt: BendTriple[] } {
+  const segs = profile.segments;
+  const parentOf = new Map<string, string>();
+  for (const [name, seg] of Object.entries(segs)) parentOf.set(seg.srcChild, name);
+
+  const src: BendTriple[] = [];
+  const tgt: BendTriple[] = [];
+  for (const [name, seg] of Object.entries(segs)) {
+    if (seg.roll !== 'bendOut' && seg.roll !== 'bendIn') continue;
+    const contract = profile.toContract[name];
+    if (contract === undefined) continue;
+
+    let a: string, b: string, c: string;
+    let tA: BoneName | undefined, tB: BoneName | undefined, tC: BoneName | undefined;
+    if (seg.roll === 'bendOut') {
+      const mid = segs[seg.srcChild];
+      if (mid === undefined) continue;
+      [a, b, c] = [name, seg.srcChild, mid.srcChild];
+      [tA, tB, tC] = [contract, seg.tgtChild, mid.tgtChild];
+    } else {
+      const upName = parentOf.get(name);
+      const up = upName === undefined ? undefined : segs[upName];
+      if (upName === undefined || up === undefined) continue;
+      [a, b, c] = [upName, name, seg.srcChild];
+      [tA, tB, tC] = [profile.toContract[upName]!, up.tgtChild, seg.tgtChild];
+    }
+    /* `ENDSITE` is the shared name of every BVH leaf, so it cannot key a position lookup — a
+     * triple that reaches one is skipped and that bone falls back to single-axis. */
+    if ([a, b, c].includes('ENDSITE')) continue;
+    if (tA === undefined || tB === undefined || tC === undefined) continue;
+    src.push({ bone: name, joints: [a, b, c] });
+    tgt.push({ bone: contract, joints: [tA, tB, tC] });
+  }
+  return { src, tgt };
+}
+
+/** Bend-plane normals taken from a rig's BIND pose, in each bone's own local frame. */
+function bendFromBind(
+  bind: BindPose,
+  pos: ReadonlyMap<string, Vector3>,
+  triples: readonly BendTriple[],
+  boneNameFor: (key: string) => string | null,
+): Map<string, Vector3> {
+  const out = new Map<string, Vector3>();
+  const p = (key: string): Vector3 | null => {
+    const n = boneNameFor(key);
+    return n === null ? null : (pos.get(n) ?? null);
+  };
+  for (const t of triples) {
+    const [j0, j1, j2] = t.joints;
+    const p0 = p(j0), p1 = p(j1), p2 = p(j2);
+    const own = boneNameFor(t.bone);
+    if (p0 === null || p1 === null || p2 === null || own === null) continue;
+    const n = bendPlaneNormal(p0, p1, p2);
+    const q = bind.q.get(own);
+    if (n === null || q === undefined) continue;
+    out.set(t.bone, n.applyQuaternion(q.clone().invert()).normalize());
+  }
+  return out;
+}
+
+/** Elbow must be bent at least this much for the frame's plane to be signal rather than noise. */
+const BEND_SAMPLE_MIN_COS = Math.cos((45 * Math.PI) / 180);
+/** Frames sampled when measuring a bend plane from motion. 240 over ~27 s is ~9 Hz — plenty. */
+const BEND_SAMPLES = 240;
+
+/**
+ * Bend-plane normals measured from the CAPTURE'S OWN MOTION, for a rig whose bind arm is straight.
+ *
+ * ═══ WHY THIS IS MEASUREMENT AND NOT INVENTION ═══════════════════════════════════════════════
+ *
+ * `heian-nidan.bvh` rests with both arms dead straight (`LeftArm -> LeftForearm -> LeftHand` are
+ * collinear along ±Z to the last decimal), so its bind names no elbow plane. But THE ELBOW IS A
+ * HINGE: its axis is a fixed property of the arm, not of the pose, so every frame in which the arm
+ * is meaningfully bent measures the same quantity. Averaging over the whole take, weighted by how
+ * bent the arm is, is reading a constant off the data — not choosing one.
+ *
+ * Measured over the WHOLE source clip on purpose, never the trimmed window, so every slice of one
+ * capture (`mocap-oi-zuki` and the full `heian-nidan`) gets the identical alignment. A per-window
+ * measurement would make two clips of the same performance disagree about which way a fist faces.
+ *
+ * Residual scatter on `heian-nidan`: 15.2° (right) and 27.9° (left) mean deviation about the mean
+ * normal, against a 225° range of captured forearm twist — the arms are the noisiest part of this
+ * solve. That scatter is the honest error bar on the result; see the header.
+ */
+function bendFromMotion(
+  skeleton: Skeleton,
+  mixer: AnimationMixer,
+  duration: number,
+  triples: readonly BendTriple[],
+): Map<string, Vector3> {
+  const out = new Map<string, Vector3>();
+  if (triples.length === 0 || duration <= 0) return out;
+  const bones = new Map(skeleton.bones.map((b) => [b.name, b]));
+  const root = skeleton.bones[0];
+  if (root === undefined) return out;
+
+  const sums = triples.map(() => new Vector3());
+  const p0 = new Vector3(), p1 = new Vector3(), p2 = new Vector3();
+  const d0 = new Vector3(), d1 = new Vector3(), n = new Vector3();
+  const inv = new Quaternion();
+
+  for (let i = 0; i < BEND_SAMPLES; i++) {
+    mixer.setTime((duration * i) / (BEND_SAMPLES - 1));
+    root.updateMatrixWorld(true);
+    for (let k = 0; k < triples.length; k++) {
+      const t = triples[k]!;
+      const a = bones.get(t.joints[0]);
+      const b = bones.get(t.joints[1]);
+      const c = bones.get(t.joints[2]);
+      const own = bones.get(t.bone);
+      if (a === undefined || b === undefined || c === undefined || own === undefined) continue;
+      a.getWorldPosition(p0);
+      b.getWorldPosition(p1);
+      c.getWorldPosition(p2);
+      d0.copy(p1).sub(p0);
+      d1.copy(p2).sub(p1);
+      if (d0.lengthSq() < 1e-12 || d1.lengthSq() < 1e-12) continue;
+      d0.normalize();
+      d1.normalize();
+      if (d0.dot(d1) > BEND_SAMPLE_MIN_COS) continue;
+      /* |cross| IS sin(bend), so using it unnormalised weights each frame by how much the joint
+       * was actually bent — a nearly straight frame carries nearly no vote. */
+      n.crossVectors(d0, d1);
+      own.getWorldQuaternion(inv).invert();
+      sums[k]!.add(n.applyQuaternion(inv));
+    }
+  }
+  for (let k = 0; k < triples.length; k++) {
+    const s = sums[k]!;
+    if (s.lengthSq() > 1e-12) out.set(triples[k]!.bone, s.normalize());
+  }
+  return out;
+}
+
+/** The roll reference for one bone, in that bone's own local frame. `null` = fall back. */
+function rollAxis(refs: RollRefs, boneName: string, key: string, kind: RollRef): Vector3 | null {
+  if (kind === 'none') return null;
+  if (kind === 'bendOut' || kind === 'bendIn') return refs.bend.get(key) ?? null;
+  const world = kind === 'hipLine' ? refs.hipLine : refs.standUp;
+  const q = refs.bind.q.get(boneName);
+  if (world === null || q === undefined) return null;
+  return world.clone().applyQuaternion(q.clone().invert());
+}
+
+/**
+ * Rest-pose world positions of a BVH skeleton, composed from the OFFSET hierarchy.
+ *
+ * ═══ WHY `bindWorld` CANNOT SUPPLY THESE ═════════════════════════════════════════════════════
+ *
+ * `BVHLoader` constructs its `Skeleton` from bones whose `matrixWorld` has never been updated, so
+ * every inverse it computes is the IDENTITY and the bind pose it reports is "every joint at the
+ * origin, unrotated". The rotations in that are accidentally correct — a BVH rest pose really is
+ * unrotated, which is why the direction match never noticed — but every position reads (0,0,0),
+ * and a roll reference built from those is silently null. Cost of finding that out: the spine and
+ * legs quietly falling back to single-axis while the arms worked.
+ *
+ * Composed from `.position` alone, ignoring rotations, which is exact for a BVH (rest rotations
+ * are identity) and stays exact if the skeleton has since been posed: BVH gives every non-root
+ * bone a position track whose keys all equal its offset. A posed ROOT would shift everything
+ * uniformly, and every use here is a DIFFERENCE of two joints, so it cancels.
+ */
+function restPositions(skeleton: Skeleton): Map<string, Vector3> {
+  const out = new Map<string, Vector3>();
+  for (const bone of skeleton.bones) {
+    const parent = bone.parent;
+    const base = parent instanceof Bone ? out.get(parent.name) : undefined;
+    out.set(bone.name, (base?.clone() ?? new Vector3()).add(bone.position));
+  }
+  return out;
+}
+
 /**
  * Metres per source unit, from LEG LENGTH rather than from hip height.
  *
@@ -410,6 +719,54 @@ export function retargetBvhClip(
   const tgtBind = tgtBindPose.q;
   const s2t = opts.sourceToTarget ?? new Quaternion();
 
+  /* Created HERE rather than beside the sample loop because the bend-plane measurement below needs
+   * the source posed, and that has to happen before the alignments are built. Sampling it leaves
+   * the source skeleton on its last sampled frame, which is harmless: every later read of a bone's
+   * `.position` wants an OFFSET, and BVH gives non-root bones a position track whose every key IS
+   * the offset. Only the root translates, and nothing below reads the root's position. */
+  const mixer = new AnimationMixer(srcRoot);
+  mixer.clipAction(src.clip).play();
+
+  /* ── the two rigs' roll references ─────────────────────────────────────────────────────────
+   *
+   * Both are resolved from the rig's own bind geometry, keyed to the CONTRACT so one code path
+   * serves BioVision, this capture, Rigify and Mixamo. The source's bend planes are the one
+   * exception: a BVH that rests with a straight arm has none, so they come from its motion. */
+  const srcNameOf = (() => {
+    const rev = new Map<BoneName, string>();
+    for (const [bvh, contract] of Object.entries(profile.toContract)) {
+      if (!rev.has(contract)) rev.set(contract, bvh);
+    }
+    return (c: BoneName): string | null => rev.get(c) ?? null;
+  })();
+  const tgtNameOf = (c: BoneName): string | null => character.boneFor(c)?.name ?? null;
+
+  const srcRest = restPositions(src.skeleton);
+  const triples = bendTriples(profile);
+  const srcBendBind = bendFromBind(srcBindPose, srcRest, triples.src, (k) => k);
+  const srcBend =
+    srcBendBind.size === triples.src.length
+      ? srcBendBind
+      : new Map([
+          ...bendFromMotion(
+            src.skeleton,
+            mixer,
+            src.clip.duration,
+            triples.src.filter((t) => !srcBendBind.has(t.bone)),
+          ),
+          ...srcBendBind,
+        ]);
+  const srcRefs: RollRefs = {
+    bind: srcBindPose,
+    ...bodyRefs(srcRest, srcNameOf),
+    bend: srcBend,
+  };
+  const tgtRefs: RollRefs = {
+    bind: tgtBindPose,
+    ...bodyRefs(tgtBindPose.p, tgtNameOf),
+    bend: bendFromBind(tgtBindPose, tgtBindPose.p, triples.tgt, (k) => tgtNameOf(k as BoneName)),
+  };
+
   /* Mapped pairs, PARENTS FIRST. `skeleton.bones` is already in hierarchy order for both loaders,
    * and the chain composition below depends on that — a child retargeted before its parent would
    * read a stale parent world and inherit the error. */
@@ -419,9 +776,10 @@ export function retargetBvhClip(
     /** Index into `quatValues`. Carried so the sample loop never scans `pairs`. */
     readonly index: number;
     /**
-     * Constant rotation taking the TARGET bone's local child-axis onto the SOURCE bone's, so that
-     * `tgtWorld = srcWorld * axisAlign` makes the two bones point the same way in model space.
-     * Never null: a bone with no usable axis is not driven at all (see the construction below).
+     * Constant rotation taking the TARGET bone's local FRAME onto the SOURCE bone's, so that
+     * `tgtWorld = srcWorld * axisAlign` makes the two bones point the same way in model space AND
+     * roll the same way about themselves. Falls back to the child axis alone where the two rigs
+     * share no second reference. Never null: a bone with no usable axis is not driven at all.
      */
     readonly axisAlign: Quaternion;
   }
@@ -469,11 +827,29 @@ export function retargetBvhClip(
      * rigs' rest directions differ. It is not a safe default; it is the same bug that pointed the
      * arms at the ceiling, just applied to fewer bones.
      *
-     * On this rig exactly one joint lands here: `DEF-head`, which Rigify's deform skeleton gives no
-     * child. Driven by the fallback it tilted the skull back through the whole kata. Pinned to its
-     * bind rotation instead, the head simply rides the neck — and the neck IS direction-matched, so
-     * the head still points where the capture points it. What is lost is skull tilt RELATIVE to the
+     * `DEF-head` lands here from the TARGET side: Rigify's deform skeleton gives it no child.
+     * Driven by the fallback it tilted the skull back through the whole kata. Pinned to its bind
+     * rotation instead, the head simply rides the neck — and the neck IS direction-matched, so the
+     * head still points where the capture points it. What is lost is skull tilt RELATIVE to the
      * neck, a few degrees nobody can name, against a backward tilt everybody can see.
+     *
+     * ═══ AND THE HANDS, FROM THE SOURCE SIDE — MEASURED, NOT ASSUMED ═══════════════════════════
+     *
+     * `heian-nidan.bvh` ends each arm AT the wrist: `LeftHand` and `RightHand` are 3-channel leaves
+     * with no end site, no finger and no thumb, so there is no wrist->something direction to match.
+     * With the forearm now frame-aligned there was a real case for driving them anyway — inherit
+     * the forearm's frame correspondence and lay the capture's own wrist rotation on top, which is
+     * the standard formula for a joint that lacks a direction. It was tried and it is WRONG HERE,
+     * for a reason that is visible in one measurement: the capture's hand sits a MEDIAN 95.6° (left)
+     * and 82.2° (right) away from its forearm, all take long, ranging over only ±30° about that.
+     * A wrist does not bend 90° and stay there. That constant is a frame convention the file never
+     * records, not a pose, and transferring it plants a permanently broken wrist — the exact defect
+     * this work exists to remove. The ±30° that rides on top is the real wrist motion, and it is
+     * not separable from the constant without inventing the constant.
+     *
+     * So the hands stay pinned to bind LOCAL, i.e. rigid to the forearm — and that is now worth
+     * having, because the forearm's roll is what a pinned hand inherits. Fixing the forearm's frame
+     * IS the palm fix; the wrist joint itself was never where the visible error lived.
      */
     if (aSrc === null || aTgt === null) continue;
 
@@ -495,11 +871,30 @@ export function retargetBvhClip(
       continue;
     }
 
+    /**
+     * ═══ TWO AXES WHEN BOTH RIGS OFFER A SECOND ONE, ONE WHEN THEY DO NOT ══════════════════════
+     *
+     * `frameAlign` builds an orthonormal frame on each rig from (child direction, roll reference)
+     * and returns the rotation that makes the two frames coincide. Its first column is the child
+     * direction untouched, so the direction match is bit-for-bit what `setFromUnitVectors` gave —
+     * measured at 0.00° mean over the whole clip before and after. The second column is the part
+     * that used to be a coin flip.
+     *
+     * `null` means one of the rigs has no usable reference for this bone — the references are
+     * parallel to the segment, or the source's bind names no bend plane. Then, and only then, the
+     * old shortest-arc answer stands: it is arbitrary, but it is arbitrary in a documented place
+     * rather than everywhere.
+     */
+    const rollSrc = rollAxis(srcRefs, srcBone.name, srcBone.name, seg?.roll ?? 'none');
+    const rollTgt = rollAxis(tgtRefs, tgtBone.name, contractName, seg?.roll ?? 'none');
+    const framed =
+      rollSrc !== null && rollTgt !== null ? frameAlign(aSrc, rollSrc, aTgt, rollTgt) : null;
+
     const pair: Pair = {
       srcBone,
       tgtBone,
       index: pairs.length,
-      axisAlign: new Quaternion().setFromUnitVectors(aTgt, aSrc),
+      axisAlign: framed ?? new Quaternion().setFromUnitVectors(aTgt, aSrc),
     };
     pairs.push(pair);
     pairByTarget.set(tgtBone, pair);
@@ -538,9 +933,6 @@ export function retargetBvhClip(
   const startS = Math.max(0, opts.startS ?? 0);
   const endS = Math.min(src.clip.duration, opts.endS ?? src.clip.duration);
   const frames = Math.max(2, Math.round((endS - startS) * fps) + 1);
-
-  const mixer = new AnimationMixer(srcRoot);
-  mixer.clipAction(src.clip).play();
 
   const times = new Float32Array(frames);
   const quatValues = pairs.map(() => new Float32Array(frames * 4));
@@ -670,11 +1062,11 @@ export function retargetBvhClip(
         continue;
       }
 
-      /* ABSOLUTE: make the target segment POINT where the source segment points.
-       * `tgtWorld = srcWorld * axisAlign` satisfies `tgtWorld * a_tgt == srcWorld * a_src` by
-       * construction, so the limb direction transfers exactly regardless of what either rig calls
-       * its rest pose. The residual freedom is twist about the bone's own axis, which a direction
-       * can never determine and which the minimal-arc `axisAlign` declines to invent. */
+      /* ABSOLUTE: make the target segment POINT where the source segment points, and ROLL the way
+       * the source segment rolls. `tgtWorld = srcWorld * axisAlign` satisfies
+       * `tgtWorld * a_tgt == srcWorld * a_src` by construction, so the limb direction transfers
+       * exactly regardless of what either rig calls its rest pose; where `axisAlign` came from a
+       * two-axis frame it also satisfies the same identity for the roll reference. */
       pair.srcBone.getWorldQuaternion(srcWorld);
       desired.copy(srcWorld).multiply(pair.axisAlign);
       if (s2t.w !== 1 || s2t.x !== 0 || s2t.y !== 0 || s2t.z !== 0) desired.premultiply(s2t);

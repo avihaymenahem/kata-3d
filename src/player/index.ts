@@ -63,12 +63,23 @@ export {
   type BvhSource,
   type RetargetOpts,
 } from './retarget';
+/* The retarget's geometry, split out so it is testable with no GLB and no capture file — see the
+ * header of `./boneBasis` for why one axis was not enough. */
+export {
+  MIN_AXIS_SEPARATION,
+  MIN_BEND_SIN,
+  bendPlaneNormal,
+  frameAlign,
+  orthonormalFrame,
+} from './boneBasis';
 export {
   STILL_SPEED_MS,
   measureClipGroundSpeed,
   timeScaleForSpeed,
 } from './locomotion';
 export { sampleCharacterLandmarks } from './characterLandmarks';
+export { attachGi, type GiHandle, type GiMaterials, type GiStats } from './gi';
+export { createFootIk, type FootIk, type FootIkOpts } from './footIk';
 export {
   CLIP_FOR_TECHNIQUE,
   MODEL_FACING_OFFSET_RAD,

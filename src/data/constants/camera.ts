@@ -87,7 +87,27 @@ export const ORBIT_CONTROLS = Object.freeze({
   enableDamping: true,
   dampingFactor: 0.05,
   minDistanceM: 1.6,
-  maxDistanceM: 9.0,
+  /**
+   * §5.7 authored 9.0 m. Reduced to 7.2 because 9.0 IS NOT REACHABLE without tearing a hole in
+   * the dojo.
+   *
+   * ═══ THE GEOMETRY ════════════════════════════════════════════════════════════════════════════
+   *
+   * `M_FAR_H = 10` puts every preset's far plane at 10 · H = 17.5 m, and the hall measures 16.6 m
+   * across, so its far wall sits at roughly `d + 8.3` m of depth from a camera orbiting at `d`.
+   * The chamfered corners reach further still. Past about 7.5 m of dolly they cross the far plane
+   * and get clipped, and what shows through the gap is the background colour — the black artefact
+   * on the wall, worst at full zoom-out, which is exactly where the frustum is tightest.
+   *
+   * Three ways out, and only one is available here. `M_FAR_H` lives in `src/contracts/units.ts`,
+   * which is hash-frozen. Shrinking the hall would make a 16.6 m dojo into something smaller than
+   * a real one. Capping the orbit costs 1.8 m of pull-back and costs nothing else: the figure is
+   * 1.8 m tall and the whole room already reads at 7.2 m.
+   *
+   * Tinting the background warm (`ENV_COLOR_HEX.background`) hides the seam and is still worth
+   * having as a backstop, but it does not close it — this does.
+   */
+  maxDistanceM: 7.2,
   minPolarAngleRad: 0.15,
   maxPolarAngleRad: 1.52,
 });

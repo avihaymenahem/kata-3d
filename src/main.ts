@@ -34,7 +34,7 @@
 
 import type { KataId, TempoTier } from './contracts';
 import { bootStage, type StageBoot } from './player';
-import { createHud } from './ui';
+import { createHud, createKataAudio } from './ui';
 
 /* ═══════════════════════════════════════════════════════════════════════════════════════════════
  * The diagnostics global
@@ -151,6 +151,16 @@ function fail(what: string, err: unknown): void {
 /** Declared at module scope so `onBeatChange`, created before boot returns, can reach it. */
 let hud: ReturnType<typeof createHud> | null = null;
 
+/**
+ * Dojo audio: spoken counts plus a synthesised kiai, gi snap and footfall.
+ *
+ * Module scope for the same reason as `hud` — `onBeatChange` is constructed before `bootStage`
+ * returns and has to be able to reach it. Created eagerly but DISABLED: a page that starts
+ * shouting on load is hostile, and browsers block an `AudioContext` until a user gesture anyway,
+ * so the first click both enables it and satisfies autoplay in one action.
+ */
+const audio = harness ? null : createKataAudio({ enabled: false, volume: 0.5 });
+
 let resolveReady: () => void = () => {};
 const g: KataBootGlobal = {
   phase: 1,
@@ -193,6 +203,12 @@ async function main(): Promise<void> {
     },
     onBeatChange: (label, kiai, index) => {
       hud?.setActive(index);
+      /* `slotSeconds` lets the footfall land relative to THIS count's kime rather than at a fixed
+       * offset — the score's travel window closes after the technique fires, so a thump placed by
+       * wall-clock arrives after the punch and reads as a stumble. */
+      audio?.onBeatChange(label, kiai, {
+        slotSeconds: boot?.choreography?.beats[index]?.durS,
+      });
       if (hintEl !== null) {
         hintEl.textContent = `${label}${kiai ? '   — KIAI!' : ''}`;
         hintEl.hidden = false;
@@ -219,6 +235,25 @@ async function main(): Promise<void> {
   });
   if (cam !== null) boot.setCameraPreset(cam, true);
 
+  /**
+   * Audio waits for a real gesture, then turns itself on once.
+   *
+   * Two things are satisfied by the same click. Browsers refuse to start an `AudioContext` without
+   * one, so anything scheduled before it is silently dropped rather than queued — and a viewer who
+   * did not ask for sound should not get shouted at by a page they just opened. `once: true` means
+   * this never fights a later explicit `setEnabled(false)`.
+   */
+  if (audio !== null) {
+    const armAudio = (): void => {
+      audio.setEnabled(true);
+      console.info(
+        `[kata] audio on — voice: ${audio.voiceName ?? 'none available, counts will be silent'}`,
+      );
+    };
+    window.addEventListener('pointerdown', armAudio, { once: true });
+    window.addEventListener('keydown', armAudio, { once: true });
+  }
+
   /* The HUD is built AFTER boot because its list is the compiled score and its clip menu includes
    * the retargeted mocap, neither of which exists until the character has loaded. */
   const hudRoot = document.getElementById('hud-root');
@@ -237,6 +272,27 @@ async function main(): Promise<void> {
         soloClip: (n) => boot.soloClip(n),
         get solo() {
           return boot.solo;
+        },
+        /* Getters, not snapshots: the transport strip polls these on its own rAF, and a plain
+         * spread would hand it the position the page happened to be at during boot, forever. */
+        transport: {
+          frameSeconds: boot.frameSeconds,
+          get durationSeconds() {
+            return boot.durationSeconds;
+          },
+          get currentSeconds() {
+            return boot.currentSeconds;
+          },
+          get playing() {
+            return boot.playing;
+          },
+          get rate() {
+            return boot.rate;
+          },
+          setPlaying: (p) => boot.setPlaying(p),
+          seekSeconds: (t) => boot.seekSeconds(t),
+          stepDisplayFrames: (n) => boot.stepDisplayFrames(n),
+          setRate: (r) => boot.setRate(r),
         },
       },
       hudRoot,

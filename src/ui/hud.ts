@@ -13,7 +13,17 @@
  * the rest of the overlay stays transparent to OrbitControls. Styles are inline here rather than in
  * `theme.css` because this is a self-contained widget and splitting six rules across two files
  * makes it harder to delete, not easier.
+ *
+ * ═══ THE SECOND HALF OF THE HUD ══════════════════════════════════════════════════════════════
+ *
+ * A count list answers "which move", never "which frame". The video-style transport that answers
+ * the second question is `./transport.ts`, and it mounts as a SIBLING at the bottom of the frame
+ * rather than as more rows in this panel — the panel is already 29 counts plus a legend plus a clip
+ * selector against a `100vh` cap, and a scrub bar that scrolls out of view is not a scrub bar.
+ * It is still built and disposed from here, so the HUD stays one object with one lifetime.
  */
+
+import { createTransport, type HudTransportHost } from './transport';
 
 export interface HudBeat {
   readonly kind: 'ceremony' | 'move';
@@ -43,6 +53,15 @@ export interface HudHost {
   readonly playing: boolean;
   soloClip(name: string | null): void;
   readonly solo: string | null;
+  /**
+   * Frame-accurate playback control, if the caller has it.
+   *
+   * OPTIONAL, and that is a compatibility decision rather than a design one: a host object written
+   * before the transport existed still satisfies `HudHost`, and the strip simply does not mount.
+   * Making it required would turn "this build predates the transport" into a type error in
+   * `src/main.ts` — a file this block does not own.
+   */
+  readonly transport?: HudTransportHost;
 }
 
 export interface Hud {
@@ -195,6 +214,9 @@ export function createHud(host: HudHost, mount: HTMLElement): Hud {
   root.append(bar, list, legend, foot);
   mount.append(style, root);
 
+  /* Built BEFORE the first `refresh()` below, because `refresh` pushes state into it. */
+  const transport = host.transport === undefined ? null : createTransport(host.transport, mount);
+
   let active = -1;
 
   function setActive(index: number): void {
@@ -213,12 +235,16 @@ export function createHud(host: HudHost, mount: HTMLElement): Hud {
 
   function refresh(): void {
     const soloing = host.solo !== null;
-    playBtn.textContent = soloing ? 'clip' : host.playing ? 'pause' : 'play';
-    playBtn.disabled = soloing;
-    playBtn.style.opacity = soloing ? '0.45' : '1';
+    /* This button used to read `clip` and go disabled while a clip was soloed, because the frame
+     * loop advanced the mixer unconditionally in that mode and never looked at `kataPlaying` — so
+     * the button toggled a flag nothing read, and the flag then took effect out of nowhere when the
+     * audition ended. `src/player/app.ts` now runs BOTH views off one clock, so pause pauses
+     * whichever one is on screen and there is nothing left to disable. */
+    playBtn.textContent = host.playing ? 'pause' : 'play';
     title.textContent = soloing ? (host.solo ?? 'clip') : 'kata';
     const want = host.solo ?? SCORE_OPTION;
     if (sel.value !== want) sel.value = want;
+    transport?.refresh();
   }
 
   playBtn.addEventListener('click', () => {
@@ -231,6 +257,7 @@ export function createHud(host: HudHost, mount: HTMLElement): Hud {
     setActive,
     refresh,
     dispose(): void {
+      transport?.dispose();
       root.remove();
       style.remove();
     },

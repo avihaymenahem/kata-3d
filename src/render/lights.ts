@@ -7,13 +7,23 @@
  * ══════════════════════════════════════════════════════════════════════════════════════════════
  * THE ONE THING THAT MATTERS MOST IN THIS FILE: RIM SEPARATION
  * ══════════════════════════════════════════════════════════════════════════════════════════════
- * The subject is a `0xF2F0EA` gi standing on a `0x7D5636` wood floor lit by a warm key. In value
- * terms the gi and the lit floor are NEIGHBOURS, and at `LOW34` and `M_TOP` — both in the default
- * shot list (§7.3) — value separation is all the viewer has. RIM at `1.4` (0.47x key,
- * `0xDFE9FF` ~7000 K) from `(-2.10, 2.80, -3.85)` is what puts a cool edge along the shoulder and
- * the trailing leg so the silhouette detaches from the floor. It is the single highest-leverage
- * light in the rig, and Channel-D rubric item C8 ("flat lighting, no separation") routes to its
- * intensity (§7.7).
+ * The subject is a `0xF2F0EA` gi standing on a `0xC0A279` pale sprung floor lit by a warm key. In
+ * value terms the gi and the lit floor are NEIGHBOURS — and since the floor went from a dark
+ * red-brown to dojo timber they are CLOSER neighbours than they were, not further apart. At `LOW34`
+ * and `M_TOP` — both in the default shot list (§7.3) — value separation is all the viewer has. RIM
+ * at `1.15` (0.47x key, `0xDFE9FF` ~7000 K) from `(-2.10, 5.40, -3.85)` is what puts a cool edge
+ * along the shoulders and the crown so the silhouette detaches from the floor. It is the single
+ * highest-leverage light in the rig, and Channel-D rubric item C8 ("flat lighting, no separation")
+ * routes to its intensity (§7.7).
+ *
+ * RIM used to sit at `y = 2.80`, an elevation of 23.7 deg to `LIGHT_AIM_M`. That is BELOW the angle
+ * at which the ORBIT frame's bottom edge grazes the floor (~40 deg), and a directional light's
+ * mirror image in a flat plane is an unbounded sheet — so the sheet landed across the far boards,
+ * in frame, at every azimuth in front of the figure. It was the loudest thing in the render. The
+ * arithmetic, the measurement and the reason a `roughnessMap` cannot reach it are all written out
+ * in `src/data/constants/render.ts` above `LIGHTS`; the short version is that RIM's elevation, not
+ * its intensity and not the floor's roughness, was the lever, and lifting it to 45.9 deg dropped
+ * worst-case floor specular from 2.494 to 0.332 with the separation edge intact.
  *
  * ══════════════════════════════════════════════════════════════════════════════════════════════
  * WHY THERE ARE FOUR, AND WHY NONE OF THEM MOVES
@@ -21,8 +31,14 @@
  * The karateka reaches six distinct headings across the embusen (H = 0, 45, 90, 180, 270, 315). With
  * only KEY/RIM/FILL, the headings whose chest normal points away from all three lose FORM on the
  * front plane and read as a flat silhouette. CROSS `[ART]` answers that: world-fixed, low, on the
- * opposite azimuth from KEY, and capped at `0.40` (0.13x key) so it can never fight the key or read
+ * opposite azimuth from KEY, and capped at `0.32` (0.13x key) so it can never fight the key or read
  * as a second source. It casts no shadow.
+ *
+ * All four now sit between 28 and 46 degrees of elevation, measured to `LIGHT_AIM_M`. That band is
+ * not a style choice: below it a directional's mirror sheet is inside the frame (see the RIM note
+ * above), and above it the rig stops modelling and starts flattening the figure from overhead. FILL
+ * and CROSS came up from 10.6 and 9.2 degrees for the first reason; they are still the two lowest
+ * lamps and still read as bounce rather than as sources.
  *
  * The rejected alternative was a camera-following practical. A moving directional makes the shading
  * terminator and the gi's sheen lobe SWIM during orbit — visible during exactly the 360 degree
@@ -93,10 +109,10 @@ export function buildLights(s: Scene): LightRig {
     return l;
   };
 
-  const key = make(LIGHTS.key, 'KEY'); // 3.0, 0xFFF4E8 ~5200 K, CASTS SHADOW
-  const rim = make(LIGHTS.rim, 'RIM'); // 1.4, 0xDFE9FF ~7000 K — the separation light
-  const fill = make(LIGHTS.fill, 'FILL'); // 0.55, white
-  const cross = make(LIGHTS.cross, 'CROSS'); // 0.40, 0xF6F2EE — [ART], form on off-axis headings
+  const key = make(LIGHTS.key, 'KEY'); // 2.45, 0xFFF4E8 ~5200 K, 45.0° — CASTS SHADOW
+  const rim = make(LIGHTS.rim, 'RIM'); // 1.15, 0xDFE9FF ~7000 K, 45.9° — the separation light
+  const fill = make(LIGHTS.fill, 'FILL'); // 0.44, white, 34.0°
+  const cross = make(LIGHTS.cross, 'CROSS'); // 0.32, 0xF6F2EE, 28.0° — [ART], off-axis headings
 
   configureShadow(key);
   assertNoAmbientLight(s);

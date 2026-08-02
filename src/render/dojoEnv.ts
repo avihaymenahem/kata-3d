@@ -20,9 +20,17 @@
  *     read as a symmetric pair;
  *   - a bright ceiling bounce card broken up by DARK TIMBER RAFTERS, so the top-down wrap has
  *     structure instead of being a featureless white dome;
- *   - a warm wood floor bounce, which is the row that puts light under the jaw.
+ *   - a warm wood floor bounce, which is the row that puts light under the jaw;
+ *   - and, in the `[ART]` layer, a chest-height room band that is BRIGHT on the shoji wall KEY comes
+ *     through and nearly dark on shomen, because a dojo is not glazed on four sides (`DETAIL.shoji*`).
  * `scene.environmentRotation = Euler(0, -0.35, 0)` (§5.1) then rotates the brightest window off the
  * camera axis so the specular is never centred.
+ *
+ * Since the four directionals were lifted out of the camera's grazing band (see `LIGHTS` in
+ * `src/data/constants/render.ts`), THIS FILE is what the floor reflects. That is the correct
+ * division of labour and it is worth stating plainly: an area emitter reflects as a bounded window
+ * shape with edges, a `DirectionalLight` reflects as an unbounded sheet. Everything here is an area
+ * emitter. Nothing here can produce the sheet the rig was moved to get rid of.
  *
  * ── PROVENANCE ────────────────────────────────────────────────────────────────────────────────
  * Every geometry size, position, colour and emissive multiplier of the five PRESCRIBED elements is
@@ -113,13 +121,32 @@ const DETAIL = Object.freeze({
   warmMullionRows: 1,
   coolMullionCols: 2,
   coolMullionRows: 0,
-  /** Exposed dark rafters across the ceiling bounce card. THE "dark timber ceiling" read. */
+  /**
+   * Exposed dark rafters across the ceiling bounce card. THE "dark timber ceiling" read, and — since
+   * they subtract from a 10 x 10 m emitter — also the honest way to make the top-down wrap weaker.
+   *
+   * 5 bars at 0.24 m covered 12% of the card, which is a token gesture: a `sao-buchi` coffered dojo
+   * ceiling is mostly timber with paper or board between it, and the render was getting a nearly
+   * uniform bright dome from above. That dome is a large part of why the hall read as a studio —
+   * daylight through shoji is a SIDE source, and if the ceiling contributes as much as the windows
+   * do, nothing on the figure has a top or a side.
+   *
+   * 7 bars at 0.40 m is 28% coverage, so the ceiling's contribution drops ~18% and, more usefully,
+   * acquires structure: the wrap on the tops of the shoulders and the crown now has stripes in it
+   * instead of a flat value. This is `[ART]`, deliberately done HERE rather than by trimming
+   * `ENV.ceilingBounceEmissive` — doc 05 §7.3 prescribes that number and it should keep meaning what
+   * the table says it means.
+   */
   rafterHex: 0x1a1512,
-  rafterCount: 5,
-  rafterWidthM: 0.24,
+  rafterCount: 7,
+  rafterWidthM: 0.4,
   rafterStandoffM: 0.05,
-  /** Plank banding on the floor bounce so the warm underside is not one flat value. */
-  plankHex: 0x6f4c2c,
+  /**
+   * Plank banding on the floor bounce so the warm underside is not one flat value. Tracks
+   * `ENV_COLOR_HEX.floorBounce` at ~0.80x, the same relationship it had to the old dark bounce —
+   * this is BANDING, and banding that does not follow its base is just a second colour.
+   */
+  plankHex: 0x937c5b,
   plankCount: 7,
   plankWidthM: 0.55,
   plankStandoffM: 0.01,
@@ -144,9 +171,34 @@ const DETAIL = Object.freeze({
    * the floor from being one continuous glow from the horizon up.
    */
   shojiHex: 0xffeed6,
-  shojiEmissive: 1.35,
+  /**
+   * PER WALL, in `CORNERS` order `+Z, +X, -Z, -X`. It was one number, 1.35, on all four — and a
+   * chest-height ring of four equally bright walls is a LIGHT BOX. It gave the wrap presence but no
+   * direction, so every heading past 90 degrees got the same flat horizontal fill and the room had
+   * no far side.
+   *
+   * A dojo is not glazed on four sides. SHOMEN (`-Z`) carries the kamiza, the scroll and solid
+   * timber panelling — `stage.ts` paints it that way and the IBL was contradicting it at 1.35x. The
+   * `+X` wall is the shoji run KEY comes through, so it is the brightest; `+Z` shares KEY's azimuth
+   * and follows; `-X` is the cool far side.
+   *
+   * Mean 1.025 against the old flat 1.35, so the horizontal wrap also drops ~24% overall — deliberate,
+   * because `ENV_COLOR_HEX.floorBounce` just got 2.4x brighter with the pale floor and the total
+   * ambient budget has to come from somewhere. What is bought with it is a bright side and a dark
+   * side at chest height, which is the only place an IBL can put FORM on a figure that turns.
+   */
+  shojiEmissive: [1.25, 1.65, 0.35, 0.85] as const,
   shojiHM: 2.05,
   shojiYM: 2.055,
+  /**
+   * Vertical kumiko bars laid over each room-band quad. The floor is glossy and, with the four
+   * directionals lifted out of the camera's grazing band (`LIGHTS`, "why every elevation is higher"),
+   * what it reflects now is THIS — so it matters that it reflects a divided screen rather than a
+   * smooth glowing stripe. Four bars per 14 m wall is coarse, but a PMREM at 512 with a 0.0195 rad
+   * pre-blur cannot resolve anything finer than about a metre anyway; the point is that the
+   * reflection has edges.
+   */
+  roomMullionCols: 4,
   /** Inset from the 14 m shell so the quads never z-fight with it. */
   roomInsetM: 0.06,
   roomWainscotHex: 0x120e0a,
@@ -301,9 +353,10 @@ export function buildDojoEnvScene(o: DojoEnvOpts = {}): DojoEnvHandle {
   }
 
   /* ── 10. `[ART]` the room band: shoji at chest height on all four walls, wainscot beneath.
-   *       See `DETAIL.shoji*` for why this exists. Each wall is one glow quad and one dark quad;
-   *       the `+X` pair sits behind the 6.0x key window and is 4.4x dimmer than it, so the
-   *       asymmetry `tests/render/config.test.ts` checks for is untouched. ─────────────────── */
+   *       See `DETAIL.shoji*` for why this exists and why the four walls are no longer equal.
+   *       The `+X` glow sits behind the 6.0x key window at 1.65x — still 3.6x dimmer than it, so
+   *       the asymmetry `tests/render/config.test.ts` checks for is untouched, and now the OTHER
+   *       three walls are asymmetric with respect to each other as well. ────────────────────── */
   {
     const d = shellW / 2 - DETAIL.roomInsetM;
     /** Facing inward from each of the four walls, in `CORNERS` order: `+Z, +X, -Z, -X`. */
@@ -313,13 +366,30 @@ export function buildDojoEnvScene(o: DojoEnvOpts = {}): DojoEnvHandle {
       { x: 0, z: -d, yaw: 0 }, // faces +Z; the plane's own default orientation
       { x: -d, z: 0, yaw: FACE_PLUS_X },
     ];
-    for (const w of walls) {
-      const glow = quad(shellW, DETAIL.shojiHM, DETAIL.shojiHex, DETAIL.shojiEmissive);
+    for (let i = 0; i < walls.length; i++) {
+      const w = walls[i]!;
+      const glow = quad(shellW, DETAIL.shojiHM, DETAIL.shojiHex, DETAIL.shojiEmissive[i]!);
       glow.position.set(w.x, DETAIL.shojiYM, w.z);
       glow.rotation.y = w.yaw;
       const base = quad(shellW, DETAIL.roomWainscotHM, DETAIL.roomWainscotHex, 1);
       base.position.set(w.x, DETAIL.roomWainscotYM, w.z);
       base.rotation.y = w.yaw;
+
+      /* Kumiko bars in front of the glow. `mullions()` above cannot be reused: it derives its
+       * inward offset from `Math.sign(-x)`, which is 0 on the two walls whose `x` is 0 and would
+       * leave those bars z-fighting inside the quad they are supposed to sit in front of. Here the
+       * offset is taken along the wall's own inward normal instead, which is `-(x, z)` normalised —
+       * and since each wall has exactly one non-zero component, that is just its sign. */
+      const inX = w.x === 0 ? 0 : -Math.sign(w.x) * DETAIL.mullionStandoffM;
+      const inZ = w.z === 0 ? 0 : -Math.sign(w.z) * DETAIL.mullionStandoffM;
+      // A yaw of +/-PI/2 puts the quad's local +X on world Z; 0 or PI leaves it on world X.
+      const along = Math.abs(Math.cos(w.yaw)) > 0.5;
+      for (let c = 1; c <= DETAIL.roomMullionCols; c++) {
+        const u = (c / (DETAIL.roomMullionCols + 1) - 0.5) * shellW;
+        const bar = quad(DETAIL.mullionThickM, DETAIL.shojiHM, DETAIL.mullionHex, 1);
+        bar.rotation.y = w.yaw;
+        bar.position.set(w.x + inX + (along ? u : 0), DETAIL.shojiYM, w.z + inZ + (along ? 0 : u));
+      }
     }
   }
 
