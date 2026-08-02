@@ -211,6 +211,19 @@ const CSS = `
 
 const SCORE_OPTION = '— kata score —';
 
+/**
+ * The clip picker is BUILT but not MOUNTED.
+ *
+ * It lists all 46 library clips plus the retargeted mocap, which is a developer's audition tool
+ * sitting in a viewer's face — `Pistol_Reload` and `Swim_Idle_Loop` next to a kata is noise, and on
+ * a phone it opens a 48-entry native picker. Hidden for now at the owner's request.
+ *
+ * Built rather than skipped so `refresh()` needs no null-guard and the element stays in one piece:
+ * flipping this back to `true` is the whole restoration. `boot.soloClip(name)` is unaffected and
+ * still drives the same path from the console or any future control.
+ */
+const SHOW_CLIP_PICKER = false;
+
 export function createHud(host: HudHost, mount: HTMLElement): Hud {
   const doc = mount.ownerDocument;
 
@@ -319,7 +332,8 @@ export function createHud(host: HudHost, mount: HTMLElement): Hud {
   tally.title = 'counts driven by real Shotokan motion capture';
   legend.append(tally);
 
-  root.append(bar, list, legend, foot);
+  root.append(bar, list, legend);
+  if (SHOW_CLIP_PICKER) root.append(foot);
   mount.append(style, root);
 
   /**
