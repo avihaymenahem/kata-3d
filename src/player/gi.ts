@@ -91,9 +91,27 @@ const C = (k: string): number => {
   return v.v;
 };
 
+/**
+ * The same table's stated UNCERTAINTY on a value, so this file can sit at a defensible END of B1's
+ * band instead of writing a different literal beside it and hoping nobody diffs the two.
+ *
+ * It matters for exactly one number here. `sleeveEndH` ships `0.255 ± 0.020 H` and is tagged `TRAD`
+ * — the tolerance is not measurement error, it is the RANGE A TAILOR CUTS IN: 0.235 H lands two
+ * thirds of the way down this figure's forearm and 0.275 H lands seven eighths of the way, and both
+ * are legal kata cuts. At the low end the cuff sits close enough to the elbow that the eye reads
+ * "no sleeve", which is the complaint this revision exists to answer, so the sleeve is cut at the
+ * long end of what doc 06 §7.1 sanctions rather than at its midpoint.
+ */
+const CTOL = (k: string): number => {
+  const v = CLOTH[k];
+  if (!v) throw new Error(`gi: CLOTH.${k} missing — B1 owns it (src/data/constants/cloth.ts)`);
+  return v.tol;
+};
+
 const HEM_FRAC = C('uwagiHemH'); //             0.400  jacket hem above the floor
 const BELT_FRAC = C('beltLineH'); //            0.6145 obi centreline
-const SLEEVE_END_FRAC = C('sleeveEndH'); //     0.255  from the shoulder joint, along the arm
+/** 0.270 H — see `CTOL`. 0.494 m along this figure's arm, i.e. 80 % down a 0.273 m forearm. */
+const SLEEVE_END_FRAC = C('sleeveEndH') + 0.75 * CTOL('sleeveEndH');
 const ZUBON_HEM_FRAC = C('zubonHemH'); //       0.100  trouser hem above the floor
 const OBI_W_FRAC = C('obiWidthH'); //           0.024
 const OBI_TAIL_FRAC = C('obiTailH'); //         0.160
@@ -102,6 +120,35 @@ const CHEST_EASE_FRAC = C('chestEaseH'); //     0.020  rule 1: the jacket is BOX
 const BELT_GATHER_FRAC = C('beltGatherH'); //   0.012  rule 8: only the belt line is tight
 const OVERLAP_FRAC = C('frontOverlapH'); //     0.130  rule 4: left front panel over right
 const SHELL_FRAC = C('fabricThicknessCm') / 100 / 1.75; // 0.63 mm as a fraction of stature
+/** 0.0425 H = 7.8 cm between fold crowns. §7.10: 2 cm folds instantly read as jersey. */
+const FOLD_WAVELENGTH_FRAC = C('foldWavelengthH');
+/** 0.29 H = 0.53 m — a HEIGHT above the floor, and exactly this figure's knee joint. */
+const KNEE_CREASE_FRAC = C('kneeCreaseH');
+const KNEE_CREASE_INTENSITY = C('kneeCreaseIntensity'); // 0.6
+
+/**
+ * Fold depth, as a fraction of stature. 6.4 mm of crown over the eased radius.
+ *
+ * doc 06 §7.9 gives the WAVELENGTH and the fold count but not an amplitude, because in §7's world
+ * the amplitude is an OUTPUT of the XPBD solve. There is no solve here (see the file header), so it
+ * is an input, and it is set from the one thing that is checkable by eye: 12 oz duck folded over
+ * itself is `2 × fabricThicknessCm` = 1.3 mm of pure cloth, and a fold in it stands about five
+ * thicknesses proud before the weave forces it to break into two folds instead of one.
+ */
+const FOLD_AMP_FRAC = 0.0035;
+
+/**
+ * How far the jacket hem RISES over each hip, as a fraction of stature. 5.5 cm.
+ *
+ * The jacket is not actually slit here, and a real uwagi is: `sideVentH` (0.19 H = 0.35 m on this
+ * figure) is the length of the open side seam that lets the front and back panels swing past each
+ * other. A closed tube cannot have that seam, but it can show its CONSEQUENCE, which is the part
+ * the eye actually reads — panels cut with a rise at the side seam so the slit does not gape, so
+ * the hem line of a hanging gi is lowest at centre-front and centre-back and highest over the hips.
+ * A dead-level hem is the single loudest tell that a garment was swept rather than cut, and it is
+ * what made this one terminate in a "flat, hard-cut polygon flap".
+ */
+const HEM_VENT_RISE_FRAC = 0.030;
 
 /**
  * Ease RATIOS, doc 06 §7.10 rules 2 and 3 read back off the authored radii:
@@ -112,22 +159,35 @@ const SHELL_FRAC = C('fabricThicknessCm') / 100 / 1.75; // 0.63 mm as a fraction
  * The shoulder end of each is deliberately much tighter — a gi sleeve is cut wide at the cuff and
  * merely loose at the armhole, and running 1.3 all the way up gives a clown's shirt.
  */
-const SLEEVE_RATIO_ROOT = 1.14;
-const SLEEVE_RATIO_CUFF = 1.34;
+const SLEEVE_RATIO_ROOT = 1.22;
+const SLEEVE_RATIO_CUFF = 1.44;
 const TROUSER_RATIO_HIP = 1.10;
 const TROUSER_RATIO_HEM = 1.95;
 
 /** Minimum radial clearance, as a fraction of stature, where the ratio rule would be tighter. */
-const SLEEVE_CLEAR_ROOT = 0.007;
-const SLEEVE_CLEAR_CUFF = 0.014;
+const SLEEVE_CLEAR_ROOT = 0.011;
+const SLEEVE_CLEAR_CUFF = 0.019;
 const TROUSER_CLEAR_HIP = 0.008;
 const TROUSER_CLEAR_HEM = 0.026;
 
-/** Resolution. 28 columns puts a 0.30 m-radius jacket ring at 6.7 cm per facet — smooth at 2 m. */
-const JACKET_COLS = 28;
-const SLEEVE_COLS = 16;
-const TROUSER_COLS = 20;
-const OBI_COLS = 28;
+/**
+ * Resolution. Every count here is a FOLD budget, not a smoothness budget.
+ *
+ * The old numbers (28/16/20/28) were chosen so a facet chord stayed under a centimetre, and they do
+ * that. What they cannot do is carry a fold: `FOLD_WAVELENGTH_FRAC · S` is 7.8 cm, a 0.20 m jacket
+ * ring is 1.26 m round, so a physically-sized fold repeats about sixteen times and 28 columns gives
+ * it 1.75 samples — under Nyquist, which is to say the fold aliases into facet noise and the ring
+ * comes back looking like the smooth inflated shell it was. `addFolds` clamps the count to `cols/3`
+ * for exactly this reason, and these numbers are what that clamp needs to leave a fold intact.
+ *
+ * The trouser count is the other half of a specific defect: 20 columns put one flat quad across
+ * the whole buttock, and `computeVertexNormals` averaged it into the hard shading facet that was
+ * visible down the seat from any angle.
+ */
+const JACKET_COLS = 36;
+const SLEEVE_COLS = 20;
+const TROUSER_COLS = 26;
+const OBI_COLS = 32;
 
 /** §4's pushout: 6 mm of guaranteed air between cloth and skin, ~10x the fabric thickness. */
 const PUSHOUT_CLEAR_FRAC = 0.0033;
@@ -466,6 +526,45 @@ function smoothRing(r: Float64Array, passes: number): void {
   }
 }
 
+/**
+ * doc 06 §7.9's folds, written into a ring's radii.
+ *
+ * ═══ WHY THE COUNT IS DERIVED AND NOT WRITTEN DOWN ═══════════════════════════════════════════
+ *
+ * §7.9 specifies a WAVELENGTH (`foldWavelengthH`, 0.0425 H = 7.8 cm on this figure), and §7.10
+ * spends a whole rule on why: the gi is 12 oz duck, folds in it are FEW and LARGE, and 2 cm folds
+ * "instantly read as jersey". A wavelength is a physical length, so the number of folds around a
+ * part is that part's own circumference divided by it — which means a sleeve gets four and a
+ * trouser leg gets seven WITHOUT either number being typed anywhere, and both carry folds of the
+ * same physical size. Typing per-part fold counts instead is how a sleeve ends up looking like it
+ * is made of a different cloth than the trousers.
+ *
+ * The clamp to `cols / 3` is Nyquist with a margin: a fold sampled by two columns is a zigzag, and
+ * `computeVertexNormals` shades a zigzag as noise rather than as cloth. Below four folds the ring
+ * is too small to carry the wavelength at all and the modulation is better read as a soft oval.
+ *
+ * ═══ WHY THE FOLD ONLY EVER ADDS CLOTH ═══════════════════════════════════════════════════════
+ *
+ * `(1 − cos)/2` is in [0, 1], never negative. A symmetric ±amp fold would put every trough INSIDE
+ * the support radius the ring was measured at — that is, inside the body — and hand §7's pushout a
+ * fight it cannot win, because a trough is a shape this function ASKED for and the pushout has no
+ * way to tell it apart from an error. Biasing the whole modulation outward costs half an amplitude
+ * of extra ease, which on a garment whose defining property is looseness is not a cost.
+ */
+function addFolds(r: Float64Array, S: number, amp: number, phase: number): void {
+  if (!(amp > 0)) return;
+  const cols = r.length;
+  let mean = 0;
+  for (const x of r) mean += x;
+  mean /= cols;
+  const wanted = Math.round((Math.PI * 2 * mean) / (FOLD_WAVELENGTH_FRAC * S));
+  const k = Math.max(4, Math.min(Math.floor(cols / 3), wanted));
+  for (let j = 0; j < cols; j++) {
+    const phi = (j / cols) * Math.PI * 2;
+    r[j] = r[j]! + amp * 0.5 * (1 - Math.cos(k * phi + phase));
+  }
+}
+
 /* ═══════════════════════════════════════════════════════════════════════════════════════════════
  * 5. THE ACCUMULATOR
  * ═══════════════════════════════════════════════════════════════════════════════════════════════ */
@@ -593,8 +692,120 @@ function hemFold(end: Ring, outward: Vector3, inward: number, depth: number): Ri
     u: end.u,
     v: end.v,
     r: end.r.map((x) => Math.max(0.004, x - dr)),
+    /* The fold inherits the end ring's per-column height, or it flattens whatever shape the hem
+     * line has. `HEM_VENT_RISE_FRAC` puts a 5.5 cm rise over each hip on the jacket's first ring;
+     * a fold that ignored it would hang a level lip under a scalloped hem, which is worse than
+     * either on its own — a level edge you can read as a design choice, a level edge peeking out
+     * from under a scalloped one you can only read as a bug. */
+    dy: end.dy === undefined ? undefined : Float64Array.from(end.dy),
   });
   return [mk(-depth, inward), mk(-0.06 * depth, inward), mk(0.35 * inward, inward * 0.45)];
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════════════════════
+ * 5b. STRAPS — the swept solid the obi knot and its tails are made of
+ * ═══════════════════════════════════════════════════════════════════════════════════════════════ */
+
+/**
+ * A strap's cross-section: a rounded rectangle, CCW in the (thickness, width) plane so §2's one
+ * winding still produces outward normals wherever the sweep frame satisfies `n × side = tangent`.
+ *
+ * Eight columns, not four. Four is what the obi tails were, and a four-corner box has three
+ * problems at belt scale: its corners are perfectly sharp where doubled canvas is round, its
+ * silhouette is the same rectangle from every angle, and `computeVertexNormals` averages a 90°
+ * corner into a shading seam that runs the whole length of the strap and reads as a crease nobody
+ * put there.
+ */
+const STRAP_SECTION: readonly (readonly [number, number])[] = Object.freeze([
+  [1, 0.62],
+  [0.5, 1],
+  [-0.5, 1],
+  [-1, 0.62],
+  [-1, -0.62],
+  [-0.5, -1],
+  [0.5, -1],
+  [1, -0.62],
+]);
+
+interface StrapPt {
+  readonly c: Vector3;
+  /** Which way the strap's face points. Re-orthogonalised against the local tangent. */
+  readonly n: Vector3;
+  /** Half-depth, i.e. how far the strap stands off its own face plane. */
+  readonly halfT: number;
+  /** Half-width, across the face. */
+  readonly halfW: number;
+}
+
+/**
+ * Sweep `STRAP_SECTION` along a polyline and CLOSE BOTH ENDS.
+ *
+ * ═══ THE CAPS ARE THE POINT ══════════════════════════════════════════════════════════════════
+ *
+ * Every free end the obi used to have was an open quad — both tails and the knot stub — and on a
+ * FrontSide material an open end is not a subtle defect: the far wall of the strap is backfacing,
+ * so you look straight through the belt into the interior of the figure, and the hole tracks the
+ * camera because it is the silhouette of a rectangle seen edge-on. It is the same failure the
+ * jacket and sleeve hems solve with `hemFold`, on a part small enough that nobody had noticed.
+ *
+ * Capped by scaling the end ring toward its own axis and sliding it past the end, rather than by a
+ * triangle fan: the fan would need its own winding rule and its own UV convention, while two more
+ * rings keep the grid rectangular and go through the same `addGrid`, the same Laplacian relaxation
+ * and the same weight smoothing as everything else. The 6 %-scale final ring is a near-degenerate
+ * octagon, not a point, so the normals at the tip stay finite.
+ */
+function emitStrap(acc: Accum, pts: readonly StrapPt[], capLen: number): void {
+  const cols = STRAP_SECTION.length;
+  const n = pts.length;
+
+  /* Central differences, so an interior point's frame does not jump at a path vertex. */
+  const tan: Vector3[] = [];
+  for (let i = 0; i < n; i++) {
+    const a = pts[Math.max(0, i - 1)]!.c;
+    const b = pts[Math.min(n - 1, i + 1)]!.c;
+    const t = b.clone().sub(a);
+    tan.push(t.lengthSq() < 1e-12 ? UP.clone() : t.normalize());
+  }
+
+  const mkRow = (i: number, scale: number, slide: number): Vector3[] => {
+    const p = pts[i]!;
+    const t = tan[i]!;
+    const nRef = p.n.clone().addScaledVector(t, -p.n.dot(t));
+    if (nRef.lengthSq() < 1e-10) nRef.copy(frame(t, UP).u);
+    nRef.normalize();
+    // `side = t × n` makes `n × side = t`, which is §2's handedness for this sweep.
+    const side = new Vector3().crossVectors(t, nRef).normalize();
+    const c = p.c.clone().addScaledVector(t, slide);
+    return STRAP_SECTION.map(([a, b]) =>
+      c
+        .clone()
+        .addScaledVector(nRef, a * p.halfT * scale)
+        .addScaledVector(side, b * p.halfW * scale),
+    );
+  };
+
+  const grid: Vector3[][] = [mkRow(0, 0.06, -capLen), mkRow(0, 0.63, -capLen * 0.45)];
+  for (let i = 0; i < n; i++) grid.push(mkRow(i, 1, 0));
+  grid.push(mkRow(n - 1, 0.63, capLen * 0.45), mkRow(n - 1, 0.06, capLen));
+
+  /* Arc length along, perimeter across — `GI_UV_UNITS`, metres, same as every other part. */
+  const uvg: [number, number][][] = [];
+  let along = 0;
+  for (let i = 0; i < grid.length; i++) {
+    if (i > 0) {
+      let step = 0;
+      for (let j = 0; j < cols; j++) step += grid[i]![j]!.distanceTo(grid[i - 1]![j]!);
+      along += step / cols;
+    }
+    const row: [number, number][] = [];
+    let per = 0;
+    for (let j = 0; j < cols; j++) {
+      if (j > 0) per += grid[i]![j]!.distanceTo(grid[i]![j - 1]!);
+      row.push([along, per]);
+    }
+    uvg.push(row);
+  }
+  acc.addGrid(grid, uvg, true);
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════════════════════════

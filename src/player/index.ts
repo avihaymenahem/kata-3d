@@ -80,6 +80,24 @@ export {
 export { sampleCharacterLandmarks } from './characterLandmarks';
 export { attachGi, type GiHandle, type GiMaterials, type GiStats } from './gi';
 export { createFootIk, type FootIk, type FootIkOpts } from './footIk';
+/* The hand shapes no capture supplies. The pure half — the doc 03 §12 angle table, the palm-plane
+ * axis derivation and the blend curve — is exported alongside the handle so it can be asserted with
+ * no GLB; see the header of `./handShape` for why the axis is measured and never named. */
+export {
+  HAND_BLEND_S,
+  HAND_SHAPES,
+  MIN_SWING_SIN,
+  createHandShaper,
+  handEase,
+  hikiteHandShape,
+  palmFacing,
+  swingAxis,
+  type HandShapeId,
+  type HandShapeSpec,
+  type HandShaper,
+  type HandShaperOpts,
+  type HandShaperStats,
+} from './handShape';
 export {
   CLIP_FOR_TECHNIQUE,
   MODEL_FACING_OFFSET_RAD,

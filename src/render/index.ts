@@ -108,6 +108,16 @@ export {
   type StageHandle,
 } from './stage';
 
+/* ── props ───────────────────────────────────────────────────────────────────────────────────── */
+export {
+  buildDojoProps,
+  disposeDojoProps,
+  propFootprints,
+  PROP_KEEP_CLEAR,
+  PROP_PLAN,
+  type DojoPropsHandle,
+} from './props';
+
 /* ── room shell ──────────────────────────────────────────────────────────────────────────────── */
 export {
   ROOM_HALF_M,

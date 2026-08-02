@@ -30,8 +30,9 @@
  * this file.
  */
 
-import type { CeremonyPhase, KataMove, KataScore, TechniqueId } from '../contracts';
+import type { CeremonyPhase, Handedness, KataMove, KataScore, TechniqueId } from '../contracts';
 import { L_M, PAUSE_CLASSES } from '../data';
+import { hikiteHandShape, type HandShapeId } from './handShape';
 /* Reaching into B3's barrel for exactly two functions, on purpose. §2.1 allows the project ONE
  * handedness conversion and it lives in `src/solve/frame.ts`; re-deriving `x -> SIDE_SIGN * x` here
  * would create the second one, which is the precise bug that rule exists to prevent. The retired
@@ -140,6 +141,17 @@ export interface Beat {
   /** Provenance of `techClip`. `null` for ceremony phases, which have no technique. */
   readonly source: TechniqueSource | null;
   readonly kiai: boolean;
+  /**
+   * The shape each HAND holds through this count — the one thing no clip in the library supplies.
+   *
+   * Resolved here rather than carried as "the technique's shape plus which arm throws it", because
+   * the consumer (`createHandShaper`) drives two hands and would otherwise have to redo the
+   * working-arm/hikite split every frame. `KataMove.tech.hand` gives the working hand;
+   * `hikiteHandShape` gives the pulling one from doc 02 §1.3's hikite form. Ceremony phases are
+   * `open` on both — doc 02 §2's rei and yoi are "hands open, thumbs tucked".
+   */
+  readonly handL: HandShapeId;
+  readonly handR: HandShapeId;
 }
 
 export interface Choreography {
@@ -212,6 +224,11 @@ function beatForMove(m: KataMove, startS: number, yawRad: number): Beat {
   /* `tSlotS` is the count itself; doc 04 §6.3's pause class is the hold AFTER it. A beat owns both,
    * so the technique's clamped final frame is what fills the pause. */
   const durS = m.tSlotS + PAUSE_CLASSES[m.pause].v;
+  /* The working arm takes the technique's own shape; the other one is the hikite. Every count of
+   * Taikyoku Shodan is `seiken` on both by that rule — twenty counts of gedan-barai and oi-zuki with
+   * HIP-A — which is exactly the defect this fixes: the score has said "fist" all along. */
+  const working: Handedness = m.tech.arm;
+  const hikite = hikiteHandShape(m.hikite);
   return {
     kind: 'move',
     n: m.n,
@@ -224,6 +241,8 @@ function beatForMove(m: KataMove, startS: number, yawRad: number): Beat {
     techClip: CLIP_FOR_TECHNIQUE[m.tech.id] ?? null,
     source: TECHNIQUE_SOURCE[m.tech.id] ?? 'standin',
     kiai: m.kiai,
+    handL: working === 'L' ? m.tech.hand : hikite,
+    handR: working === 'R' ? m.tech.hand : hikite,
   };
 }
 
@@ -264,6 +283,8 @@ function beatForCeremony(p: CeremonyPhase, startS: number): Beat {
     techClip: null,
     source: null,
     kiai: false,
+    handL: 'open',
+    handR: 'open',
   };
 }
 
