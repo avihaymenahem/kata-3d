@@ -259,7 +259,18 @@ export function createCameraRig(o: CameraRigOpts = {}): KataCameraRig {
   /* Blend state (§5.7: 0.6 s, easeOutCubic on position/target, linear on fov). */
   let blendT = 1;
   /** Heading-locked follow, ORBIT only. See `setFollowHeading`. */
-  let followHeading = false;
+  /**
+   * ON by default.
+   *
+   * Off, the camera holds a fixed compass bearing while the kata turns 90, 180 and 270 degrees
+   * beneath it — so a view framed front-on at count 1 is looking at the karateka's back by count 3,
+   * and the viewer has to chase him with a drag to see anything. On, the chosen angle is held
+   * RELATIVE to him and the kata reads from one consistent side without touching the camera.
+   *
+   * `f` still turns it off, which is what you want for studying the FLOOR PATTERN — the embusen is
+   * a fixed shape in the room and only a room-fixed camera shows it as one.
+   */
+  let followHeading = true;
   /** The figure's facing last frame; `null` until the first usable reading. */
   let lastFacingRad: number | null = null;
   /** Turn the figure has made that the camera has not caught up with yet, radians. */
