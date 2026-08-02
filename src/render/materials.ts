@@ -255,6 +255,27 @@ export function createMaterials(): MaterialSet {
   M_GI.clearcoat = P.M_GI!.clearcoat!.v; // 0
   M_GI.transmission = P.M_GI!.transmission!.v; // 0 — never non-zero: +1 full scene render/frame
 
+  /**
+   * ═══ THE GI DOES NOT MIRROR THE WINDOWS ══════════════════════════════════════════════════════
+   *
+   * `envMapIntensity` defaults to 1, so every material reflects `scene.environment` at full
+   * strength. For the floor that is correct and wanted — `dojoEnv.ts`'s window quads are area
+   * sources and reflect as bounded window SHAPES, which is what sells a lacquered sprung floor.
+   *
+   * On the gi it is the "sun glimpse" a viewer reported: white cotton was picking up the shoji
+   * band, which `dojoEnv` captures at 6.0x, and returning it as a bright moving patch across the
+   * chest and shoulders. Roughness spreads that patch; it does not remove it, because a rough
+   * surface still integrates the same incoming radiance. The energy has to come down.
+   *
+   * 0.30 keeps the ambient term that stops the uniform going flat and dead in shadow, while
+   * dropping the specular window image below where the eye reads it as a reflection. Heavy cotton
+   * canvas genuinely is close to a Lambertian absorber — it has no business mirroring anything.
+   *
+   * Set HERE and not in `render.ts` because it is a per-material renderer property, not one of
+   * §5.6's authored PBR scalars, and B5 owns the material objects.
+   */
+  M_GI.envMapIntensity = 0.3;
+
   /* ── M_SKIN — no SSS. `SubsurfaceScatteringShader` is Phong-based AND a ShaderMaterial. ──── */
   const M_SKIN = new MeshPhysicalMaterial({
     name: 'M_SKIN',
