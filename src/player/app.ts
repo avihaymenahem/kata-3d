@@ -73,10 +73,11 @@ const stageBit = (id: string): number => {
 import { createSampler } from './sampler';
 import { applyPose } from './poseApply';
 import { loadCharacter, type Character } from './character';
-import { buildChoreography, type Choreography } from './choreography';
+import { buildChoreography, type Beat, type Choreography } from './choreography';
 import { sampleCharacterLandmarks } from './characterLandmarks';
 import { addBvhClip } from './retarget';
 import { createFootIk, type FootIk } from './footIk';
+import { createHandShaper, type HandShaper } from './handShape';
 import { attachGi, type GiHandle } from './gi';
 import {
   buildKarateka,
@@ -89,10 +90,12 @@ import {
   buildEnvironment,
   buildLights,
   buildStage,
+  buildDojoProps,
   buildPost,
   createMaterials,
   disposeLights,
   disposeMaterials,
+  disposeDojoProps,
   disposeStage,
   refitShadow,
   stageClipBox,
@@ -278,6 +281,14 @@ export interface StageBoot {
   readonly rig: RigHandles;
   /** The clip-driven figure. `null` under `?rig=proc`, where `rig` is what you see instead. */
   readonly character: Character | null;
+  /**
+   * The hand-shape pass. Exposed where `footIk` is not, because it is the only one of the two whose
+   * result cannot be read off the scene at all: a foot is either through the floor or it is not,
+   * while "is that a fist" needs the module's own `stats` to say which shape it believes it is
+   * holding, on which hand, and whether it resolved a palm plane for that hand in the first place.
+   * `setEnabled` is also the only way to look at the un-shaped hand for comparison.
+   */
+  readonly handShaper: HandShaper | null;
   /** B2's score driving that figure. `null` without a `kataId`, or on the procedural path. */
   readonly choreography: Choreography | null;
   readonly cameraRig: KataCameraRig;
@@ -421,6 +432,21 @@ export async function bootStage(o: StageBootOpts): Promise<StageBoot> {
   /* ── §5.1 [5] materials, then the stage that owns the floor maps ──────────────────────────── */
   const materials = createMaterials();
   const stage = buildStage(scene, materials);
+  /**
+   * The hall's furniture. Parented to `stage.backdrop` inside `buildDojoProps`, not to the scene —
+   * see its header for why (metric 60's mask hides the stage by reference).
+   *
+   * NON-FATAL, like the gi and the mocap before it. A dojo with no benches is a worse-looking app;
+   * a dojo that refuses to boot is no app at all, and decoration has no business being able to
+   * cause the second. Observed: a mid-edit `props.ts` threw and took the whole page to the boot
+   * error screen, hiding a working renderer, character, score and HUD behind a missing bench.
+   */
+  let props: ReturnType<typeof buildDojoProps> | null = null;
+  try {
+    props = buildDojoProps(stage);
+  } catch (err) {
+    console.warn('[kata] dojo props failed to build — rendering the bare hall', err);
+  }
 
   /* ── §5.1 [6] the karateka ────────────────────────────────────────────────────────────────
    *
@@ -450,6 +476,34 @@ export async function bootStage(o: StageBootOpts): Promise<StageBoot> {
     for (const name of ['Idle_Loop', 'idle', ...character.clipNames]) {
       if (character.play(name, 0) !== null) break;
     }
+    /**
+     * ═══ THE IMPORTED FIGURE WEARS ITS OWN MATERIALS, AND THEY ARE NOT OURS ══════════════════
+     *
+     * `AnimLib.glb` ships a preview look: `M_Main` orange plastic `#e7aa3a` for the skin and
+     * `M_Joints` violet `#aa66db` for the rig's joint balls. Those balls are a MODELLING AID — a
+     * visual marker so an animator can see the skeleton — and they sit slightly proud of the mesh
+     * at every joint. Under a gi they surface as purple rings at the neck, both wrists and both
+     * ankles, in essentially every frame.
+     *
+     * So: skin takes B5's `M_SKIN`, which is the tone the rest of this app was lit and graded for,
+     * and the joint markers are hidden outright rather than recoloured — a hidden aid costs one
+     * fewer draw call than a disguised one, and there is nothing about them worth keeping.
+     *
+     * Detected by MATERIAL NAME rather than mesh name: `Mannequin_1`/`Mannequin_2` are this file's
+     * accident, while `M_Joints` is what the marker geometry is actually called, and a differently
+     * exported character would keep the second and not the first.
+     */
+    character.root.traverse((o) => {
+      const m = o as { isMesh?: boolean; material?: { name?: string }; visible?: boolean };
+      if (m.isMesh !== true || m.material === undefined) return;
+      const name = m.material.name ?? '';
+      if (/joint/i.test(name)) {
+        o.visible = false;
+      } else if (/main|skin|body/i.test(name)) {
+        (o as unknown as { material: MaterialSet['M_SKIN'] }).material = materials.M_SKIN;
+      }
+    });
+
     rig.root.visible = false;
 
     /* ── real karate, retargeted from motion capture ──────────────────────────────────────────
@@ -534,6 +588,18 @@ export async function bootStage(o: StageBootOpts): Promise<StageBoot> {
   const footIk: FootIk | null = character !== null ? createFootIk(character) : null;
 
   /**
+   * Hand shapes. The capture has no fingers at all, so without this the karateka punches with an
+   * open hand for the whole kata — see the header of `./handShape`.
+   *
+   * Built here beside the foot IK because both are per-frame passes over bones the mixer owns, but
+   * they share nothing else: the foot pass reads world matrices and must therefore run LAST, while
+   * this one only writes bone locals and can run the moment `character.update` has finished. It is
+   * driven immediately after the mixer, below, so the shaped fingers are in the very first
+   * `updateMatrixWorld` of the frame rather than a matrix walk later.
+   */
+  const handShaper: HandShaper | null = character !== null ? createHandShaper(character) : null;
+
+  /**
    * The gi. Attached BEFORE the foot IK runs but after the character exists, because it skins itself
    * against the body mesh's existing weights — the body is already correctly bound, so a
    * nearest-vertex weight transfer inherits a deformation that is known good rather than guessed.
@@ -544,11 +610,23 @@ export async function bootStage(o: StageBootOpts): Promise<StageBoot> {
   let gi: GiHandle | null = null;
   if (character !== null) {
     try {
-      gi = attachGi(character);
+      gi = attachGi(character, { M_GI: materials.M_GI, M_OBI: materials.M_OBI });
     } catch (err) {
       console.warn('[kata] gi could not be attached — rendering the bare figure', err);
     }
   }
+
+  /**
+   * The score's hand shapes, applied to whichever hands the beat names. Called every frame rather
+   * than only on a beat change: `set` is a no-op when the shape is already the target, and driving
+   * it unconditionally means a seek, a `goToBeat` and the loop back to the top all land on the right
+   * shapes without three separate places remembering to say so.
+   */
+  const applyBeatHands = (beat: Beat | undefined, blendS?: number): void => {
+    if (beat === undefined) return;
+    handShaper?.set('L', beat.handL, blendS);
+    handShaper?.set('R', beat.handR, blendS);
+  };
 
   if (character !== null && o.scoreView !== true) {
     const start = o.startClip ?? 'heian-nidan';
@@ -556,6 +634,25 @@ export async function bootStage(o: StageBootOpts): Promise<StageBoot> {
       soloClipName = start;
       character.play(start, 0, { loop: 'repeat' });
     }
+
+    /**
+     * ═══ THE CONTINUOUS VIEW HOLDS SEIKEN, BECAUSE IT HAS NOTHING BETTER TO GO ON ══════════════
+     *
+     * A raw capture is 20 joints of body and no technique labels: nothing in `heian-nidan.bvh` says
+     * which count is running, so per-technique shapes are not derivable here the way they are from
+     * the score. The default therefore has to be a CONSTANT, and for a karate kata that constant is
+     * the closed fist — Heian Nidan is fists for the overwhelming majority of its length, and the
+     * one place it is not (the shuto-uke pair) is wrong by one hand shape, against a punch that
+     * would otherwise be wrong for the entire take.
+     *
+     * Snapped, not eased: a page that fades its fists closed over its first frames reads as a
+     * loading artefact rather than as a stance.
+     */
+    handShaper?.set('L', 'seiken', 0);
+    handShaper?.set('R', 'seiken', 0);
+  } else {
+    /* Score view: open on beat 0's own shapes with no ease, for the same reason. */
+    applyBeatHands(choreography?.beats[0], 0);
   }
 
   /* ── §5.1 [7] camera ─────────────────────────────────────────────────────────────────────── */
@@ -808,12 +905,19 @@ export async function bootStage(o: StageBootOpts): Promise<StageBoot> {
         kataTimeS = wrapKata(kataTimeS + clipDt);
         choreography.update(kataTimeS);
         const beat = choreography.beats[choreography.at];
+        applyBeatHands(beat);
         if (beat !== undefined && beat.label !== lastBeatLabel) {
           lastBeatLabel = beat.label;
           onBeatChange?.(beat.label, beat.kiai, choreography.at);
         }
       }
       character.update(clipDt);
+      /* AFTER the mixer, which has just written every finger bone — the retargeted capture pins
+       * them all to bind and the library clips carry a boxer's open hand — and BEFORE the matrix
+       * walk, so the shaped fingers are in the first world update of the frame rather than a walk
+       * later. Real `dt`, not `clipDt`: a hand asked for a new shape while the transport is paused
+       * still has to finish arriving at it. */
+      handShaper?.update(dt);
       character.root.updateMatrixWorld(true);
       /* Landmarks come from the figure that is actually on screen. Without this the camera frames,
        * and the shadow fits, the invisible procedural rig standing back at the embusen origin. */
@@ -999,6 +1103,7 @@ export async function bootStage(o: StageBootOpts): Promise<StageBoot> {
     stage,
     rig,
     character,
+    handShaper,
     choreography,
     cameraRig,
     post: postStack,
@@ -1137,8 +1242,10 @@ export async function bootStage(o: StageBootOpts): Promise<StageBoot> {
       postStack.dispose();
       gi?.dispose();
       footIk?.dispose();
+      handShaper?.dispose();
       character?.dispose();
       scene.remove(rig.root);
+      if (props !== null) disposeDojoProps(props);
       disposeStage(scene, stage);
       disposeLights(scene, lights);
       disposeMaterials(materials);
