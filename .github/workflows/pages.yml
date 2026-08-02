@@ -1,0 +1,63 @@
+# Build the viewer and publish it to GitHub Pages.
+#
+# Deploys from the Actions artifact rather than a `gh-pages` branch: the build is 21 MB, almost all
+# of it binary model and motion-capture files, and committing that on every push would bloat the
+# repository's history permanently for no benefit.
+#
+# `npm test` is deliberately NOT a gate here. The suite has 7 known failures — all the same S13
+# bake-gate assertion in the retired `src/solve` compiler, which no longer drives anything the page
+# renders. Gating on a suite with known reds either blocks every deploy or trains everyone to
+# ignore it. Typecheck IS gated, because it has no known failures and a type error is a real break.
+
+name: Pages
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+# One in-flight deploy at a time; let a newer push supersede an older queued one, but never cancel
+# a run that is already publishing.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Build
+        run: npm run build
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

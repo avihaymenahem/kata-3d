@@ -3,7 +3,17 @@ import { defineConfig } from 'vite'
 // Orchestrator-owned (docs/OWNERSHIP.md). Blocks must not edit this file.
 // Kept deliberately plain: tools/ssr.mjs boots this same config in middleware mode so the
 // GL-free numeric channel (`npm run score`) loads the very TypeScript the browser runs.
-export default defineConfig({
+export default defineConfig(({ command }) => ({
+  /**
+   * GitHub Pages serves a project site from `/<repo>/`, not from the domain root, so every asset
+   * URL the build emits has to carry that prefix or the page loads and then 404s on the glTF, the
+   * mocap and its own JS.
+   *
+   * Only on BUILD. The dev server is served at the root, and `tools/ssr.mjs` boots this same config
+   * in middleware mode for the GL-free numeric channel — a base prefix there would break both.
+   */
+  base: command === 'build' ? '/kata-3d/' : '/',
+
   // `host: true` binds every interface instead of loopback, which is what lets a phone on the
   // Tailscale mesh reach this at http://100.x.x.x:5178 — Vite's default is localhost-only, so the
   // connection was refused before it ever reached the app.
@@ -30,4 +40,4 @@ export default defineConfig({
   },
   // Deterministic asset URLs keep captured-frame paths stable across runs.
   assetsInclude: ['**/*.ktx2'],
-})
+}))
