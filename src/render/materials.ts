@@ -306,6 +306,21 @@ export function createMaterials(): MaterialSet {
   });
   M_OBI.clearcoat = 0;
   M_OBI.transmission = 0;
+  /**
+   * The belt is the same problem as the gi, one row down, and it was missed the first time.
+   *
+   * `specularIntensity` and `envMapIntensity` both default to 1 when unset, so the obi shipped at
+   * FULL gloss reflecting the room at FULL strength — on a black cotton belt, against the shoji
+   * band `dojoEnv` captures at 6.0x. Dark and glossy is the worst combination for this: a low
+   * albedo hides nothing, so the window image is the ONLY thing the eye sees on the belt, and it
+   * reads as wet vinyl rather than as the heavy woven cotton an obi is.
+   *
+   * Matched to the gi (`0.30`) since it is the same fibre, with specular pulled to `0.14`. `sheen`
+   * stays at §5.6's 0.25 — a belt does have more fibre nap than the jacket, and that is a
+   * documented value rather than an oversight.
+   */
+  M_OBI.specularIntensity = 0.14;
+  M_OBI.envMapIntensity = 0.3;
 
   /* ── M_FLOOR — Standard, not Physical: nothing here needs sheen. ─────────────────────────── */
   const M_FLOOR = new MeshStandardMaterial({
