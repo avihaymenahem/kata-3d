@@ -12,6 +12,7 @@ import { describe, expect, it } from 'vitest';
 
 import { DISPLAY_TICKS, TICK_HZ } from '../../src/contracts';
 import {
+  formatClockSeconds,
   formatTransportClock,
   frameIndexOf,
   pointerFraction,
@@ -46,6 +47,27 @@ describe('formatTransportClock', () => {
   it('never prints a negative position or NaN', () => {
     expect(formatTransportClock(-0.5, 10)).toBe('0.00 / 10.00 s');
     expect(formatTransportClock(Number.NaN, Number.NaN)).toBe('0.00 / 0.00 s');
+  });
+});
+
+describe('formatClockSeconds — the compact strip’s entire read-out', () => {
+  /* On a narrow screen the duration is dropped from the clock and moved into the folded row, so this
+   * one number is all a phone shows of the position. It therefore has to keep the frame-resolving
+   * precision AND the clamping that used to live in the full string. */
+  it('keeps the two decimals a single frame step needs to be visible', () => {
+    expect(formatClockSeconds(12.4)).toBe('12.40');
+    expect(formatClockSeconds(1.0)).not.toBe(formatClockSeconds(1.0 + FRAME_S));
+  });
+
+  it('never prints a negative position or NaN', () => {
+    expect(formatClockSeconds(-0.5)).toBe('0.00');
+    expect(formatClockSeconds(Number.NaN)).toBe('0.00');
+  });
+
+  it('is the piece the wide read-out is composed from, so the two cannot drift apart', () => {
+    expect(formatTransportClock(12.4, 26.9)).toBe(
+      `${formatClockSeconds(12.4)} / ${formatClockSeconds(26.9)} s`,
+    );
   });
 });
 

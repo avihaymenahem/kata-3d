@@ -294,6 +294,22 @@ async function main(): Promise<void> {
           stepDisplayFrames: (n) => boot.stepDisplayFrames(n),
           setRate: (r) => boot.setRate(r),
         },
+        /* The twelve camera presets and the follow-cam toggle, which until now existed ONLY as
+         * `1`-`9` / `0` / `m` / `r` / `f` on the window key handler — i.e. not at all on a phone.
+         * Every call below already existed on `StageBoot`; the HUD needed no new hook, only a
+         * reference. `active` is read through a getter for the same reason the transport's numbers
+         * are: the bar marks the current preset, and the keyboard can change it behind the bar's
+         * back. */
+        camera: {
+          setPreset: (id, exact) => boot.setCameraPreset(id, exact),
+          setFollowCam: (on) => boot.setFollowCam(on),
+          get followCam() {
+            return boot.followCam;
+          },
+          get active() {
+            return boot.cameraRig.active;
+          },
+        },
       },
       hudRoot,
     );

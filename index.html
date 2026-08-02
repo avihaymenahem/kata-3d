@@ -2,7 +2,17 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!--
+      `viewport-fit=cover` because the one thing on this page is a full-bleed 3D dojo: letterboxing
+      it into the safe area to dodge a notch would put black bars around a render. Taking the whole
+      screen is only safe because every overlay B8 mounts pads itself with `env(safe-area-inset-*)`
+      — the canvas goes under the notch and the home indicator, the CONTROLS never do.
+      No `maximum-scale` / `user-scalable=no`: pinch-zoom is an accessibility control and disabling
+      it to stop an accidental double-tap zoom is the wrong trade. The controls handle that
+      themselves with `touch-action: manipulation`, which drops the double-tap delay without
+      disabling the gesture anywhere else.
+    -->
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="color-scheme" content="dark" />
     <title>Kata 3D — Shotokan kata viewer</title>
     <style>
@@ -30,6 +40,20 @@
         background: var(--kata-bg);
         color: var(--kata-fg);
         font: 13px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+        /*
+          `overflow: hidden` stops the page SCROLLING; it does nothing about the overscroll gesture
+          itself. On a phone, a downward drag that starts anywhere the canvas has not claimed still
+          triggers pull-to-refresh in Chrome and the rubber-band bounce in Safari — the first
+          RELOADS the page mid-kata, taking the compile with it. `overscroll-behavior: none` is what
+          actually cancels both.
+
+          `text-size-adjust` stops iOS inflating the font when a phone is turned to landscape. The
+          HUD reserves widths in px for tabular numbers, so an engine silently scaling text up
+          re-wraps the count list and clips the transport's clock.
+        */
+        overscroll-behavior: none;
+        -webkit-text-size-adjust: 100%;
+        text-size-adjust: 100%;
       }
 
       #kata-stage {
@@ -51,12 +75,24 @@
         outline: none;
       }
 
-      /* Overlay roots. B8 (src/ui/**) mounts the timeline, labels and HUD into these. */
+      /*
+        Overlay roots. B8 (src/ui/**) mounts the timeline, labels and HUD into these.
+
+        `z-index: 1` puts every mounted panel above `#kata-hint`, which is later in the DOM and
+        therefore painted over them by default. That was invisible while the hint was a 16 px line in
+        the bottom-left corner and nothing ever reached it; on a compact viewport the hint spans the
+        full width just above the transport, and in landscape it ran straight through the camera
+        popover and the count list's footer. The hint is the lowest-priority chrome on the page — it
+        repeats what the count list already says — so it is the thing that goes underneath.
+        `#boot-status` keeps its own `z-index: 10` and stays above everything, which is correct: a
+        failed boot must never be hidden behind a control panel.
+      */
       #ui-root,
       #hud-root {
         position: fixed;
         inset: 0;
         pointer-events: none;
+        z-index: 1;
       }
       #ui-root > *,
       #hud-root > * {
@@ -116,6 +152,33 @@
       #kata-hint[hidden] {
         display: none;
       }
+
+      /*
+        COMPACT — the same breakpoint `src/ui/layout.ts` compiles into every widget's stylesheet.
+        The two numbers below ARE `COMPACT_MAX_WIDTH_PX` and `COMPACT_MAX_HEIGHT_PX`; a plain
+        stylesheet in a plain HTML file cannot import them, so this is the one copy in the codebase
+        and it has to be changed with them. Everything else derives its query from the module.
+
+        `#kata-hint` is not decoration by the time this matters: `src/main.ts` overwrites it with the
+        CURRENT COUNT's name on every beat. On a phone the transport strip goes full-bleed along the
+        bottom edge, straight through where the hint used to sit, so the hint moves ABOVE it, spans
+        the width, and centres — which is also where a viewer's eye already is, on the strip. 88 px
+        clears a 44 px control row plus the strip's padding and its 8 px offset.
+      */
+      @media (max-width: 900px), (max-height: 560px) {
+        #kata-hint {
+          left: 8px;
+          right: 8px;
+          bottom: calc(88px + env(safe-area-inset-bottom));
+          text-align: center;
+          font-size: 12px;
+          /* One line, always. A wrapped three-line hint on a 375 px screen covers the karateka's
+             head, and the text it wraps is a technique name that is readable truncated. */
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+      }
     </style>
   </head>
   <body>
@@ -135,9 +198,16 @@
       </div>
     </div>
 
+    <!--
+      Touch first, keys second, and in that order on purpose: the keyboard half of this line was for
+      years the ONLY documentation of controls that had no on-screen equivalent at all. They have one
+      now (the `cam` button, top-left), so the shortcuts are what they should always have been — an
+      accelerator for the people who have a keyboard, named after a control you can also see.
+    -->
     <div id="kata-hint" hidden>
-      drag to orbit · scroll to zoom · <b>1-9</b> camera presets · <b>0</b> overhead ·
-      <b>m</b> cycle measurement cams · <b>r</b> reset · <b>f</b> follow-cam (hold angle as he turns)
+      drag to orbit · pinch to zoom · <b>cam</b> (top-left) for viewpoints and follow-cam ·
+      keys: <b>1-9</b> presets · <b>0</b> overhead · <b>m</b> measurement · <b>r</b> reset ·
+      <b>f</b> follow
     </div>
 
     <script type="module" src="/src/main.ts"></script>

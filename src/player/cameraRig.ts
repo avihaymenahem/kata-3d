@@ -48,7 +48,7 @@
  *     means translating BOTH by the same delta — writing `target` alone silently rotates the view.
  */
 
-import { OrthographicCamera, PerspectiveCamera, Vector3, type Camera } from 'three';
+import { OrthographicCamera, PerspectiveCamera, TOUCH, Vector3, type Camera } from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
 import {
@@ -278,6 +278,44 @@ export function createCameraRig(o: CameraRigOpts = {}): KataCameraRig {
     controls.minPolarAngle = ORBIT_CONTROLS.minPolarAngleRad;
     controls.maxPolarAngle = ORBIT_CONTROLS.maxPolarAngleRad;
     controls.screenSpacePanning = false;
+
+    /**
+     * ═══ PAN IS OFF, AND NOT AS A PREFERENCE ═══════════════════════════════════════════════════
+     *
+     * It cannot work here, and leaving it on is actively worse than removing it. `update` follows
+     * the karateka by re-deriving `controls.target` from the damped follow point every frame and
+     * translating the eye by the same delta (see the ORBIT branch). A pan moves target and eye
+     * together by `p`; the very next frame measures `_delta = _target - controls.target = -p` and
+     * puts both back. So the gesture is undone one frame after it is made — visible as a twitch,
+     * never as a pan.
+     *
+     * That matters most on touch, because the two-finger drag is not an obscure gesture here: it IS
+     * the pinch-zoom (`TOUCH.DOLLY_PAN` below), and every pinch carries some translation with it.
+     * With pan enabled, zooming in on a phone jitters the whole dojo on every frame of the gesture.
+     *
+     * The camera is never left without a way to recentre: it is ALWAYS framed on the figure by
+     * construction, which is what pan would otherwise be used to fix.
+     */
+    controls.enablePan = false;
+
+    /**
+     * ═══ THE TOUCH GESTURE MAP IS PINNED, NOT INHERITED ════════════════════════════════════════
+     *
+     * These two lines are three's current defaults, written out on purpose. One-finger-orbit is not
+     * a nicety of this product, it is the product — "a 360-degree kata viewer" is a promise about
+     * exactly this gesture — and it reaches OrbitControls only because `#kata-canvas` sets
+     * `touch-action: none`, which is itself a line in another file that looks deletable. Pinning the
+     * map here means a three upgrade that re-tunes its defaults (the mouse map has been re-tuned
+     * before) shows up as a diff on this file rather than as a viewer that silently stops rotating
+     * under a finger, which is a symptom nobody debugs by reading a changelog.
+     *
+     * `DOLLY_PAN` and not `DOLLY_ROTATE` for the two-finger case even though pan is disabled above:
+     * `DOLLY_ROTATE` would make a two-finger twist rotate the camera as well, so a pinch aimed at
+     * zooming would also swing the view — the same complaint the pan jitter caused, from the other
+     * direction. With pan off, `DOLLY_PAN` degrades to a clean pinch-zoom and nothing else.
+     */
+    controls.touches.ONE = TOUCH.ROTATE;
+    controls.touches.TWO = TOUCH.DOLLY_PAN;
   }
 
   const viewChanged = (): void => {

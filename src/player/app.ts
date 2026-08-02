@@ -79,6 +79,7 @@ import { addBvhClip } from './retarget';
 import { createFootIk, type FootIk } from './footIk';
 import { createHandShaper, type HandShaper } from './handShape';
 import { attachGi, type GiHandle } from './gi';
+import { attachFacialHair, type FacialHairHandle } from './facialHair';
 import {
   buildKarateka,
   createLandmarks,
@@ -609,11 +610,26 @@ export async function bootStage(o: StageBootOpts): Promise<StageBoot> {
    * failure here warns and continues instead of taking the dojo down with it.
    */
   let gi: GiHandle | null = null;
+  let facialHair: FacialHairHandle | null = null;
   if (character !== null) {
     try {
       gi = attachGi(character, { M_GI: materials.M_GI, M_OBI: materials.M_OBI });
     } catch (err) {
       console.warn('[kata] gi could not be attached — rendering the bare figure', err);
+    }
+    /* Parented to the head BONE inside `attachFacialHair`, not to the scene, and returning `null`
+     * rather than throwing on a rig it cannot measure — same non-fatal contract as the gi above. It
+     * takes no material: see `makeHairMaterial` for why it owns a matte one instead of `M_HAIR`.
+     *
+     * The `try` is not redundant with that contract. Returning `null` covers the case the module
+     * ANTICIPATES; it cannot cover the one it does not, and a throw here reached the boot error
+     * screen and hid a working renderer, dojo, character and HUD behind a missing moustache. Every
+     * decorative attachment in this function is now wrapped for the same reason — props and the gi
+     * each took the page down exactly once before earning theirs. */
+    try {
+      facialHair = attachFacialHair(character);
+    } catch (err) {
+      console.warn('[kata] facial hair could not be attached — rendering the bare face', err);
     }
   }
 
@@ -958,10 +974,33 @@ export async function bootStage(o: StageBootOpts): Promise<StageBoot> {
   renderer.setAnimationLoop(frame);
 
   /* ── resize ──────────────────────────────────────────────────────────────────────────────── */
+  /**
+   * ═══ MEASURE THE PARENT, NEVER THE CANVAS ════════════════════════════════════════════════════
+   *
+   * This read `o.canvas.clientWidth`, and that is a LATCH that can only ever grow.
+   *
+   * `WebGLRenderer.setSize(w, h)` defaults `updateStyle` to true, so it writes an INLINE
+   * `style.width: 1222px` onto the canvas — which overrides the `width: 100%` rule in
+   * `index.html`. From then on `clientWidth` reports the value this function itself last set, not
+   * the space actually available. Growing still worked, because a bigger window makes the parent
+   * bigger and the canvas is `width:100%`... until the first inline write pins it.
+   *
+   * Observed at 375 x 812: `#kata-stage` correctly reported 375 x 812 while `#kata-canvas` inside
+   * it was still 1222 x 808, so the renderer kept drawing a landscape frame that the phone
+   * viewport simply cropped — the karateka rendered at dead centre of a canvas whose centre was
+   * off the right of the screen. `window.dispatchEvent(new Event('resize'))` could not clear it;
+   * nothing could, because the measurement was self-referential.
+   *
+   * The parent is `#kata-stage`, `position: fixed; inset: 0`, and nothing writes inline styles to
+   * it. `getBoundingClientRect` over `clientWidth` so a fractional CSS size (common on phones with
+   * an odd DPR) does not truncate and leave a one-pixel seam.
+   */
+  const sizeSource: HTMLElement = o.canvas.parentElement ?? o.canvas;
   const applySize = (): void => {
     if (harness) return; // pinned 1024 x 1024 DPR 1
-    const w = o.canvas.clientWidth || 1600;
-    const h = o.canvas.clientHeight || 900;
+    const r = sizeSource.getBoundingClientRect();
+    const w = Math.round(r.width) || o.canvas.clientWidth || 1600;
+    const h = Math.round(r.height) || o.canvas.clientHeight || 900;
     const dpr = typeof devicePixelRatio === 'number' ? devicePixelRatio : 1;
     postStack.setSize(w, h, Math.min(dpr, POST.maxPixelRatio.v));
     cameraRig.setSize(w, h);
@@ -969,9 +1008,11 @@ export async function bootStage(o: StageBootOpts): Promise<StageBoot> {
   };
   applySize();
 
+  /* Observe the PARENT for the same reason: the canvas's own box is downstream of this function,
+   * so observing it is a feedback loop that can also miss a shrink entirely. */
   const ro =
     typeof ResizeObserver === 'function' && !harness ? new ResizeObserver(() => applySize()) : null;
-  ro?.observe(o.canvas);
+  ro?.observe(sizeSource);
 
   /* ── input: §6.7's `1`-`9` camera presets, plus `0`/`m` for the measurement cameras ──────── */
   const setCameraPreset = (id: string, exact = false): void => {
@@ -1149,6 +1190,11 @@ export async function bootStage(o: StageBootOpts): Promise<StageBoot> {
       kataTimeS = b.startS;
       choreography.invalidate();
       choreography.update(kataTimeS);
+      /* The hands belong to the count being jumped to, not to the one being left. Without this the
+       * shapes only catch up on the next animation frame — invisible while playing, but a click on
+       * a count PAUSES, and the whole point of pausing is that the frame you are looking at is the
+       * one you asked for. */
+      applyBeatHands(b);
       lastBeatLabel = b.label;
       onBeatChange?.(b.label, b.kiai, choreography.at);
 
@@ -1249,6 +1295,7 @@ export async function bootStage(o: StageBootOpts): Promise<StageBoot> {
       cameraRig.dispose();
       postStack.dispose();
       gi?.dispose();
+      facialHair?.dispose();
       footIk?.dispose();
       handShaper?.dispose();
       character?.dispose();

@@ -13,6 +13,26 @@
  */
 
 export { createHud, type Hud, type HudBeat, type HudHost } from './hud';
+/* The camera bar is mounted BY `createHud`, like the transport. What crosses the barrel is the host
+ * shape `src/main.ts` fills in — the presets and the follow-cam toggle were keyboard-only until it
+ * existed, so this is the type that makes them reachable without a keyboard. */
+export { createCameraBar, type CameraBar, type CameraBarHost } from './cameraBar';
+/* The breakpoints themselves, so `tests/ui` can assert the phone/desktop decision without a DOM and
+ * so any later widget takes the SAME decision instead of inventing a second definition of narrow. */
+export {
+  COARSE_POINTER_MEDIA,
+  COMPACT_MAX_HEIGHT_PX,
+  COMPACT_MAX_WIDTH_PX,
+  COMPACT_MEDIA,
+  isCompactViewport,
+  readViewport,
+  resolveLayout,
+  TOUCH_MEDIA,
+  TOUCH_TARGET_PX,
+  type UiLayout,
+  type Viewport,
+  type ViewportSource,
+} from './layout';
 export {
   createKataAudio,
   countKana,
@@ -33,6 +53,7 @@ export {
  * so `tests/ui` can assert the clock and the frame ordinal without a DOM. */
 export {
   createTransport,
+  formatClockSeconds,
   formatTransportClock,
   frameIndexOf,
   pointerFraction,

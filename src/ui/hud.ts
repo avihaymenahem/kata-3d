@@ -21,8 +21,23 @@
  * rather than as more rows in this panel — the panel is already 29 counts plus a legend plus a clip
  * selector against a `100vh` cap, and a scrub bar that scrolls out of view is not a scrub bar.
  * It is still built and disposed from here, so the HUD stays one object with one lifetime.
+ *
+ * `./cameraBar.ts` is the third piece and mounts the same way, for the same reason: it answers a
+ * third question ("from where"), it needs its own corner, and it must not be inside a panel that
+ * starts life COLLAPSED on a phone — a camera control you can only reach by first opening the count
+ * list is a camera control a phone user will not find.
+ *
+ * ═══ WHY THIS PANEL BOOTS CLOSED ON A PHONE ══════════════════════════════════════════════════
+ *
+ * 232 px of panel against a 375 px screen is 62 % of the frame, and what it is covering is a figure
+ * performing a kata across a 3.4 m embusen. The collapse already existed and was already the right
+ * escape hatch; what was missing was it being the DEFAULT on the screens where it is not optional.
+ * The decision itself lives in `./layout.ts` — see there for why it keys on viewport width AND
+ * height and not on whether the device has a touchscreen.
  */
 
+import { createCameraBar, type CameraBarHost } from './cameraBar';
+import { COMPACT_MEDIA, readViewport, resolveLayout, TOUCH_MEDIA, TOUCH_TARGET_PX } from './layout';
 import { createTransport, type HudTransportHost } from './transport';
 
 export interface HudBeat {
@@ -62,6 +77,13 @@ export interface HudHost {
    * `src/main.ts` — a file this block does not own.
    */
   readonly transport?: HudTransportHost;
+  /**
+   * The camera presets and the follow-cam toggle, for the same reason and on the same terms as
+   * `transport` above: OPTIONAL, so a host written before the camera bar existed still compiles, and
+   * the bar simply does not mount. A build that omits it is a build where the twelve viewpoints are
+   * keyboard-only — which is exactly the state this field exists to end.
+   */
+  readonly camera?: CameraBarHost;
 }
 
 export interface Hud {
@@ -86,11 +108,17 @@ const CSS = `
 .kata-hud__title{font-size:10px;letter-spacing:.09em;text-transform:uppercase;
   color:var(--kata-accent,#7dd3a0);font-weight:600;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .kata-hud__btn{appearance:none;border:1px solid rgba(255,255,255,.14);background:rgba(255,255,255,.05);
-  color:inherit;border-radius:6px;padding:3px 9px;font:inherit;font-size:11px;cursor:pointer;white-space:nowrap}
+  color:inherit;border-radius:6px;padding:3px 9px;font:inherit;font-size:11px;cursor:pointer;white-space:nowrap;
+  touch-action:manipulation;-webkit-tap-highlight-color:transparent}
 .kata-hud__btn:hover{background:rgba(255,255,255,.12)}
-.kata-hud__list{overflow-y:auto;overscroll-behavior:contain;flex:1 1 auto;padding:4px 0}
+/* 'pan-y' and not the default 'auto': the list must scroll under a finger, and nothing else about
+   this panel should be draggable — a horizontal swipe over a 232 px column is a mis-hit, not an
+   instruction, and letting it start a page pan on iOS drags the whole fixed overlay off screen. */
+.kata-hud__list{overflow-y:auto;overscroll-behavior:contain;flex:1 1 auto;padding:4px 0;
+  touch-action:pan-y;-webkit-overflow-scrolling:touch}
 .kata-hud__row{display:flex;align-items:baseline;gap:8px;padding:4px 10px;cursor:pointer;
-  border-left:2px solid transparent;white-space:nowrap}
+  border-left:2px solid transparent;white-space:nowrap;
+  user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent}
 .kata-hud__row:hover{background:rgba(255,255,255,.06)}
 .kata-hud__row[data-active="1"]{background:rgba(125,211,160,.14);border-left-color:var(--kata-accent,#7dd3a0)}
 .kata-hud__n{width:17px;text-align:right;color:var(--kata-dim,#7c8894);
@@ -126,6 +154,59 @@ const CSS = `
 .kata-hud[data-collapsed="1"] .kata-hud__legend,
 .kata-hud[data-collapsed="1"] .kata-hud__foot{display:none}
 .kata-hud[data-collapsed="1"] .kata-hud__title{max-width:150px}
+
+/* ═══ COMPACT ════════════════════════════════════════════════════════════════════════════════
+ *
+ * The height cap is the whole game in portrait, and it is a genuine trade rather than a number
+ * picked to look tidy. Width cannot be given back — the labels are Japanese technique names and
+ * 232 px is already the floor — so the only lever left is how far down the panel reaches, and it is
+ * pulling against itself: shorter buries less of the karateka, taller shows more of the 29 counts.
+ *
+ * The arithmetic, at 812 px (an iPhone in portrait) and a ${TOUCH_TARGET_PX} px row:
+ *   visible rows = floor((cap - 58 px bar - 35 px legend - 60 px footer) / ${TOUCH_TARGET_PX})
+ * 46 % showed FOUR of 29 counts, which is a list you scroll rather than read. 55 % shows six and
+ * still leaves the bottom 45 % of the screen — where a standing figure's stance and both feet are —
+ * permanently clear. Six is where this stops being worth another pixel of the dojo: the active count
+ * scrolls itself into view on every beat, so the window only has to be big enough to show where you
+ * are and what is coming, not the whole kata at once.
+ *
+ * Landscape inverts the problem: the panel is now 232 px of a ~900 px frame (a quarter, affordable)
+ * but the screen is ~430 px tall, so a percentage cap would cut the list to three rows. There the
+ * cap is "everything except the transport strip" — 84 px clears the strip's 58 px row, its 8 px
+ * bottom offset and a visible gap — which is the honest maximum.
+ *
+ * 'dvh' after 'vh' in both, not instead of it: mobile Safari's 'vh' is the LARGE viewport, so a
+ * 'vh'-capped panel is taller than the visible page whenever the URL bar is showing, and the last
+ * rows sit under browser chrome. The duplicate declaration is the fallback for engines without
+ * 'dvh' — they take the first and ignore the second. */
+@media ${COMPACT_MEDIA}{
+  .kata-hud{top:calc(10px + env(safe-area-inset-top));right:calc(10px + env(safe-area-inset-right));
+    width:min(232px,calc(100vw - 20px));max-height:55vh;max-height:55dvh}
+  /* Play lives on the transport strip on a phone. Two play buttons on a 375 px screen is one too
+     many, and the strip's is the one with the scrub bar next to it. */
+  .kata-hud__play{display:none}
+}
+@media ${COMPACT_MEDIA}{
+  @media (orientation:landscape){
+    .kata-hud{max-height:calc(100vh - 84px);max-height:calc(100dvh - 84px)}
+  }
+}
+
+/* ═══ TOUCH SIZING ═══════════════════════════════════════════════════════════════════════════
+ * A row is a full-width strip, so its hit box is 232 x ${TOUCH_TARGET_PX} — far past any target-size
+ * guideline in the long axis, and the short axis is what a thumb misses on. 'align-items:center'
+ * replaces the baseline alignment, which looks correct at a 22 px row and visibly top-heavy once the
+ * row is twice that tall. */
+@media ${TOUCH_MEDIA}{
+  .kata-hud__bar{padding:7px 10px;gap:7px}
+  .kata-hud__btn{min-height:${TOUCH_TARGET_PX}px;padding:0 14px;font-size:12px;border-radius:8px}
+  .kata-hud__min{width:${TOUCH_TARGET_PX}px;height:${TOUCH_TARGET_PX}px;font-size:16px;border-radius:8px}
+  .kata-hud__row{align-items:center;padding:0 10px;min-height:${TOUCH_TARGET_PX}px;font-size:13px}
+  .kata-hud__n{font-size:12px;width:19px}
+  .kata-hud__foot{padding:8px 10px}
+  .kata-hud__sel{min-height:${TOUCH_TARGET_PX}px;font-size:12px;border-radius:8px;padding:0 8px}
+  .kata-hud__legend{padding:8px 10px;font-size:11px}
+}
 `;
 
 const SCORE_OPTION = '— kata score —';
@@ -145,7 +226,7 @@ export function createHud(host: HudHost, mount: HTMLElement): Hud {
   title.className = 'kata-hud__title';
   title.textContent = 'kata';
   const playBtn = doc.createElement('button');
-  playBtn.className = 'kata-hud__btn';
+  playBtn.className = 'kata-hud__btn kata-hud__play';
   playBtn.type = 'button';
 
   /**
@@ -241,11 +322,33 @@ export function createHud(host: HudHost, mount: HTMLElement): Hud {
   root.append(bar, list, legend, foot);
   mount.append(style, root);
 
+  /**
+   * The layout decision, taken ONCE from the live viewport. `readViewport(doc.defaultView)` and not
+   * `window` directly, so a HUD built into a detached or secondary document reads that document's
+   * own dimensions — and so the whole thing degrades to the desktop layout, rather than to a phone
+   * layout, when there is no view to measure at all.
+   */
+  const layout = resolveLayout(readViewport(doc.defaultView));
+
   /* Built BEFORE the first `refresh()` below, because `refresh` pushes state into it. */
   const transport = host.transport === undefined ? null : createTransport(host.transport, mount);
+  const cameraBar =
+    host.camera === undefined
+      ? null
+      : createCameraBar(host.camera, mount, { open: layout.cameraBarOpen });
 
   let active = -1;
-  let collapsed = false;
+  let collapsed = layout.hudCollapsed;
+  /**
+   * Has the viewer expressed an opinion about this panel?
+   *
+   * Once they have, a window resize must not overrule it. Without this, dragging a desktop browser
+   * narrower shuts a list the user deliberately opened, and widening it re-opens one they
+   * deliberately shut — the classic responsive-UI insult of a control that keeps undoing you.
+   * Before they have, following the viewport is exactly right, which is the case a rotation from a
+   * roomy tablet landscape into portrait hits.
+   */
+  let userSetCollapsed = false;
 
   function applyCollapsed(): void {
     if (collapsed) root.dataset['collapsed'] = '1';
@@ -260,9 +363,30 @@ export function createHud(host: HudHost, mount: HTMLElement): Hud {
 
   minBtn.addEventListener('click', () => {
     collapsed = !collapsed;
+    userSetCollapsed = true;
     applyCollapsed();
   });
   applyCollapsed();
+
+  /**
+   * Crossing the compact boundary AFTER boot — a desktop window dragged past 900 px, a tablet
+   * rotated from landscape into portrait — re-applies the default, but only while the viewer has not
+   * taken the decision themselves. The same query string the stylesheet is compiled from, so the
+   * panel cannot end up open under a rule that has already capped it to a title bar.
+   *
+   * Nothing fires when a phone is merely rotated: both of its orientations are compact, so the query
+   * stays matched and the listener is never called. That is the correct behaviour and it is worth
+   * saying out loud — a rotation must not reset a list the user just opened to check a count.
+   */
+  const view = doc.defaultView;
+  const mq = view?.matchMedia?.(COMPACT_MEDIA) ?? null;
+  const onMediaChange = (e: MediaQueryListEvent): void => {
+    cameraBar?.setOpen(!e.matches);
+    if (userSetCollapsed) return;
+    collapsed = e.matches;
+    applyCollapsed();
+  };
+  mq?.addEventListener('change', onMediaChange);
 
   function setActive(index: number): void {
     if (index === active) return;
@@ -292,6 +416,7 @@ export function createHud(host: HudHost, mount: HTMLElement): Hud {
     const want = host.solo ?? SCORE_OPTION;
     if (sel.value !== want) sel.value = want;
     transport?.refresh();
+    cameraBar?.refresh();
   }
 
   playBtn.addEventListener('click', () => {
@@ -304,6 +429,9 @@ export function createHud(host: HudHost, mount: HTMLElement): Hud {
     setActive,
     setCollapsed(on?: boolean): void {
       collapsed = on ?? !collapsed;
+      /* A programmatic call counts as an opinion too: whoever made it knows something about this
+       * session that a breakpoint does not, and a later resize must not silently discard it. */
+      userSetCollapsed = true;
       applyCollapsed();
     },
     get collapsed(): boolean {
@@ -311,6 +439,8 @@ export function createHud(host: HudHost, mount: HTMLElement): Hud {
     },
     refresh,
     dispose(): void {
+      mq?.removeEventListener('change', onMediaChange);
+      cameraBar?.dispose();
       transport?.dispose();
       root.remove();
       style.remove();
