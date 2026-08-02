@@ -479,27 +479,28 @@ export async function bootStage(o: StageBootOpts): Promise<StageBoot> {
     /**
      * ═══ THE IMPORTED FIGURE WEARS ITS OWN MATERIALS, AND THEY ARE NOT OURS ══════════════════
      *
-     * `AnimLib.glb` ships a preview look: `M_Main` orange plastic `#e7aa3a` for the skin and
-     * `M_Joints` violet `#aa66db` for the rig's joint balls. Those balls are a MODELLING AID — a
-     * visual marker so an animator can see the skeleton — and they sit slightly proud of the mesh
-     * at every joint. Under a gi they surface as purple rings at the neck, both wrists and both
-     * ankles, in essentially every frame.
+     * `AnimLib.glb` ships a preview look in two materials: `M_Main`, orange plastic `#e7aa3a`, for
+     * the body, and `M_Joints`, violet `#aa66db`, for the spheres at every articulation. Under a
+     * white gi the violet surfaced as rings at the neck, both wrists and both ankles.
      *
-     * So: skin takes B5's `M_SKIN`, which is the tone the rest of this app was lit and graded for,
-     * and the joint markers are hidden outright rather than recoloured — a hidden aid costs one
-     * fewer draw call than a disguised one, and there is nothing about them worth keeping.
+     * ═══ WHY BOTH ARE RE-MATERIALLED AND NEITHER IS HIDDEN ══════════════════════════════════
      *
-     * Detected by MATERIAL NAME rather than mesh name: `Mannequin_1`/`Mannequin_2` are this file's
-     * accident, while `M_Joints` is what the marker geometry is actually called, and a differently
-     * exported character would keep the second and not the first.
+     * Hiding `M_Joints` was tried first, on the reading that articulation spheres are a modelling
+     * aid. They are not — or not only. They are also the CAP GEOMETRY that closes the body mesh:
+     * `M_Main` is open at the neck, the wrists and the ankles, and the spheres are what fills those
+     * openings. Hidden, the neck became a hole looking into an unlit interior, made worse by
+     * `M_Main` being `DoubleSide`, so the inside of the torso rendered rather than nothing at all.
+     *
+     * Painting both with B5's `M_SKIN` fills the seams with the same tone as the limb they join,
+     * which is what the geometry was always for. Matched on MATERIAL name rather than mesh name:
+     * `Mannequin_1`/`Mannequin_2` is this particular file's accident, while `M_Main`/`M_Joints`
+     * describe what the geometry IS, and a differently exported character would keep the second
+     * naming and not the first.
      */
     character.root.traverse((o) => {
-      const m = o as { isMesh?: boolean; material?: { name?: string }; visible?: boolean };
+      const m = o as { isMesh?: boolean; material?: { name?: string } };
       if (m.isMesh !== true || m.material === undefined) return;
-      const name = m.material.name ?? '';
-      if (/joint/i.test(name)) {
-        o.visible = false;
-      } else if (/main|skin|body/i.test(name)) {
+      if (/joint|main|skin|body/i.test(m.material.name ?? '')) {
         (o as unknown as { material: MaterialSet['M_SKIN'] }).material = materials.M_SKIN;
       }
     });
@@ -839,8 +840,15 @@ export async function bootStage(o: StageBootOpts): Promise<StageBoot> {
        * that has already fired would otherwise show the previous count's clip until the next one. */
       choreography.invalidate();
       choreography.update(kataTimeS);
+      applyBeatHands(choreography.beats[choreography.at]);
       character?.update(0);
     }
+    /* Re-shape the fingers the mixer has just re-written. `character.update(0)` above exists
+     * precisely so a paused seek is VISIBLE, and without this line the half of the pose this module
+     * owns is not: the hand would show the clip's own bind-pinned fingers — flat and open — until
+     * the next animation frame. One frame at 60 Hz, but a scrub is exactly when someone is looking
+     * closely at a single held pose. */
+    handShaper?.update(0);
     resettleView();
   };
 
