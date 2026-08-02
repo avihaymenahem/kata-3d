@@ -81,6 +81,7 @@ import { createSelfCollision, type SelfCollision } from './selfCollision';
 import { createHandShaper, type HandShaper } from './handShape';
 import { attachGi, type GiHandle } from './gi';
 import { attachFacialHair, type FacialHairHandle } from './facialHair';
+import { attachScalpHair, type ScalpHairHandle } from './scalpHair';
 import {
   buildKarateka,
   createLandmarks,
@@ -627,6 +628,7 @@ export async function bootStage(o: StageBootOpts): Promise<StageBoot> {
    */
   let gi: GiHandle | null = null;
   let facialHair: FacialHairHandle | null = null;
+  let scalpHair: ScalpHairHandle | null = null;
   if (character !== null) {
     try {
       gi = attachGi(character, { M_GI: materials.M_GI, M_OBI: materials.M_OBI });
@@ -635,7 +637,7 @@ export async function bootStage(o: StageBootOpts): Promise<StageBoot> {
     }
     /* Parented to the head BONE inside `attachFacialHair`, not to the scene, and returning `null`
      * rather than throwing on a rig it cannot measure — same non-fatal contract as the gi above. It
-     * takes no material: see `makeHairMaterial` for why it owns a matte one instead of `M_HAIR`.
+     * takes no material: see `makeMatteHairMaterial` for why it owns a matte one instead of `M_HAIR`.
      *
      * The `try` is not redundant with that contract. Returning `null` covers the case the module
      * ANTICIPATES; it cannot cover the one it does not, and a throw here reached the boot error
@@ -646,6 +648,15 @@ export async function bootStage(o: StageBootOpts): Promise<StageBoot> {
       facialHair = attachFacialHair(character);
     } catch (err) {
       console.warn('[kata] facial hair could not be attached — rendering the bare face', err);
+    }
+    /* The horseshoe of scalp hair, on the same non-fatal contract and inside its own `try` for the
+     * same reason — the two attachments fail independently and a karateka with a mustache and no
+     * hair is a better outcome than a boot error screen. Its own file explains why it re-calibrates
+     * the skull probe instead of taking `attachFacialHair`'s single fit. */
+    try {
+      scalpHair = attachScalpHair(character);
+    } catch (err) {
+      console.warn('[kata] scalp hair could not be attached — rendering the bare skull', err);
     }
   }
 
@@ -1318,6 +1329,7 @@ export async function bootStage(o: StageBootOpts): Promise<StageBoot> {
       postStack.dispose();
       gi?.dispose();
       facialHair?.dispose();
+      scalpHair?.dispose();
       selfCollision?.dispose();
       footIk?.dispose();
       handShaper?.dispose();

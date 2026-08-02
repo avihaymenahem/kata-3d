@@ -193,7 +193,7 @@ export function faceAxes(
   return { left, fwd: new Vector3().crossVectors(left, new Vector3(0, 1, 0)).normalize() };
 }
 
-interface Head {
+export interface Head {
   readonly bone: Bone;
   /** `inverse(head.matrixWorld)` at bind time — the cloud space -> bone space matrix. */
   readonly toBone: Matrix4;
@@ -210,12 +210,28 @@ interface Head {
   readonly ra: number;
   readonly rb: number;
   readonly rc: number;
-  /** Radius multiplier that lifts the fit onto the face. See `faceFit`. */
+  /**
+   * Radius multiplier that lifts the fit onto the face. See `faceFit`.
+   *
+   * LOCAL TO THE MUSTACHE. It is the largest under-read measured over the vertices around the lip,
+   * in the front hemisphere only, and it is not a property of the head — a consumer placing
+   * geometry anywhere else has to calibrate in ITS own neighbourhood or it inherits the face's
+   * error at the crown. `./scalpHair.ts` is that consumer and does exactly that; this field stays
+   * the mustache's own.
+   */
   readonly fit: number;
+  /**
+   * Every bind-pose vertex whose dominant bone is `head`, in cloud space — the raw evidence the
+   * ellipsoid above was fitted to, kept rather than discarded so a second consumer can re-calibrate
+   * against the SAME sample without walking the skinned meshes a second time. 202 of them on
+   * `AnimLib.glb`, so this is a few kilobytes held for the life of the character, not a copy of the
+   * body.
+   */
+  readonly pts: readonly Vector3[];
 }
 
 /** The un-calibrated ellipsoid's radius at a height and an azimuth, about the head's own axis. */
-function ellipsoidRadius(
+export function ellipsoidRadius(
   e: { centre: Vector3; ra: number; rb: number; rc: number },
   y: number,
   phi: number,
@@ -297,7 +313,7 @@ function faceFit(
  * face, a shelf rather than a mustache. Measured, again, not guessed. The head is not an ellipsoid
  * — it is flatter over the crown than one — so no single scale makes the fit both safe and close.
  */
-function measureHead(character: Character): Head | null {
+export function measureHead(character: Character): Head | null {
   const bone = character.boneFor('head');
   if (bone === null) return null;
 
@@ -397,6 +413,7 @@ function measureHead(character: Character): Head | null {
     rb: sb.half,
     rc: sc.half,
     fit,
+    pts,
   };
 }
 
@@ -414,12 +431,23 @@ function measureHead(character: Character): Head | null {
  * matters more than it sounds: a mustache sits where the face has already begun to lean back under
  * the cheekbone, and laid along a purely radial normal it would stand straight out of the head —
  * about 20° of pitch away from lying on the lip.
+ *
+ * `fit` overrides `head.fit` for callers that are not the mustache. The stored one was calibrated
+ * over the lip and the front hemisphere ONLY (see `faceFit`), and this head is measurably not an
+ * ellipsoid — the crown and the nape are its worst-fitting regions — so anything placed elsewhere
+ * has to supply the scale IT measured. Omitting the argument is the mustache's own call and keeps
+ * that path byte-for-byte what it was.
  */
-function surfaceAt(head: Head, y: number, phi: number): { p: Vector3; n: Vector3 } {
+export function surfaceAt(
+  head: Head,
+  y: number,
+  phi: number,
+  fit?: number,
+): { p: Vector3; n: Vector3 } {
   const b = y - head.centre.y;
   const sn = Math.sin(phi);
   const cs = Math.cos(phi);
-  const r = ellipsoidRadius(head, y, phi) * head.fit;
+  const r = ellipsoidRadius(head, y, phi) * (fit ?? head.fit);
   const a = r * sn;
   const c = r * cs;
 
@@ -541,13 +569,25 @@ const FACIAL_HAIR_NAME = 'karateka_facial_hair';
  * So: §5.6's hair COLOUR verbatim, `0x1A1512`, with roughness up at 0.88 and `envMapIntensity`
  * at 0.10 to match what `materials.ts` now does for every cloth surface. HANDOFF: when B5 has a
  * matte hair material, this should take it as an option and this function should go.
+ *
+ * Exported because `./scalpHair.ts` needs the identical refusal and copying four numbers into a
+ * second file is how the fifth shine report happens. It takes `name`, a `color` and an opt-in to
+ * `vertexColors` — the scalp band is salt-and-pepper and carries its tones per vertex — and it
+ * takes NOTHING that could reintroduce a highlight. There is deliberately no roughness or
+ * `envMapIntensity` argument: those two are the entire point of the function, and a parameter is
+ * an invitation to pass 0.55.
  */
-function makeHairMaterial(): MeshStandardMaterial {
+export function makeMatteHairMaterial(opts?: {
+  name?: string;
+  color?: number;
+  vertexColors?: boolean;
+}): MeshStandardMaterial {
   const m = new MeshStandardMaterial({
-    name: 'M_FACIAL_HAIR',
-    color: new Color(0x1a1512),
+    name: opts?.name ?? 'M_FACIAL_HAIR',
+    color: new Color(opts?.color ?? 0x1a1512),
     roughness: 0.88,
     metalness: 0,
+    vertexColors: opts?.vertexColors === true,
   });
   m.envMapIntensity = 0.1;
   return m;
@@ -593,7 +633,7 @@ export function attachFacialHair(character: Character): FacialHairHandle | null 
   g.setIndex(new BufferAttribute(new Uint32Array(idx), 1));
   g.computeVertexNormals();
 
-  const material = makeHairMaterial();
+  const material = makeMatteHairMaterial();
   const mesh = new Mesh(g, material);
   mesh.name = FACIAL_HAIR_NAME;
   /**

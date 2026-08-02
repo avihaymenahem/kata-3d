@@ -85,9 +85,26 @@ export {
   MUSTACHE_SECTION,
   attachFacialHair,
   faceAxes,
+  makeMatteHairMaterial,
   type FacialHairHandle,
   type FacialHairStats,
 } from './facialHair';
+/* The horseshoe an old man has left. It reuses `./facialHair`'s skull probe and its matte material
+ * outright — see that file's header for the two placement bugs the probe already paid for, and this
+ * one's for why the mustache's single `fit` had to become a field before it could wrap a whole
+ * skull. The outline and the salt-and-pepper mix are exported beside the handle because their
+ * failure is silent: a clean ring and a hairline through the brows both render happily. */
+export {
+  TEMPLE_PHI,
+  HORSESHOE_BOTTOM,
+  HORSESHOE_TOP,
+  attachScalpHair,
+  hairNoise,
+  horseshoeEdges,
+  saltPepperMix,
+  type ScalpHairHandle,
+  type ScalpHairStats,
+} from './scalpHair';
 export { createFootIk, type FootIk, type FootIkOpts } from './footIk';
 /* Keeping the hands out of the head and the ribs. The pure half — segment-segment closest points,
  * the capsule push-out with its three-layer normal fallback, the reach limiter and the anti-jitter
