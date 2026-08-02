@@ -1,0 +1,860 @@
+/**
+ * B6 PLAYER — `src/player/app.ts` — THE COMPOSITION ROOT (Phase-1 subset)
+ *
+ * §4.6 makes this "the only file importing every barrel", and §8's Phase-1 exit gate is
+ * "`npm run dev` shows the procedural karateka standing at bind pose in the lit dojo with a visible
+ * contact shadow". This file is what makes that gate reachable.
+ *
+ * ═══ WHY THE COMPOSITION IS HERE AND NOT IN `src/main.ts` ═════════════════════════════════════
+ *
+ * `src/main.ts` MAY NOT IMPORT `three` — AT ALL, not even `import type`. `tests/contracts/
+ * imports.test.ts` computes a file's ownership tree with `treeOf`, which returns `null` for any path
+ * with fewer than three segments (`src/main.ts` has two). The three-containment check then falls
+ * back to the pseudo-tree `'src'`, which is on none of its three lists — free, math-only, or banned
+ * — so it lands in the final `else` and is reported as "tree src is not on the three allowlist".
+ * The allowlist is `src/rig`, `src/render`, `src/player`, `src/ui`.
+ *
+ * That is not a bug to work around: it is what forces the entry point to stay a URL-parameter shim,
+ * which is exactly how §4.6 describes it ("entry; URL params"). Every line that touches a renderer,
+ * a scene or a camera therefore lives under `src/player/**`, and this is the file §4.6 nominates.
+ *
+ * ═══ WHAT IS DELIBERATELY *NOT* HERE ═════════════════════════════════════════════════════════
+ *
+ * `bootApp(o: BootOpts): Promise<AppHandle>` — §3.13's frozen entry point — is NOT exported yet, and
+ * that is on purpose. `AppHandle` requires `transport`, `source`, `cloth` and `weights`, and all four
+ * are downstream of B3's `compileKata`, which does not exist before Phase 2. Shipping a `bootApp`
+ * that returned a half-populated `AppHandle` would let a downstream block bind to it and typecheck,
+ * which is worse than not having it: the missing pieces would surface as runtime holes instead of as
+ * a compile error. `bootStage` below is a NARROWER, differently-named Phase-1 function; Phase 2 adds
+ * `bootApp` beside it (transport + sampler + poseApply + loop + harness) and this becomes its
+ * scene-building half.
+ *
+ * ═══ BOOT ORDER IS §5.1, IN ORDER ════════════════════════════════════════════════════════════
+ *
+ *   renderer -> scene -> IBL (PMREM) -> lights (+ shadow) -> materials -> stage -> karateka ->
+ *   camera -> composer -> compileAsync -> setAnimationLoop
+ *
+ * The order is load-bearing in three places: `sheen` is nearly invisible without
+ * `scene.environment` (doc 05 §14.1 #14) so the IBL precedes anything that reads it; `buildLights`
+ * calls `configureShadow` internally so the shadow camera exists before `refitShadow`; and
+ * `compileAsync` must see the FINAL scene graph or the first frame stalls on shader compilation
+ * while the still accumulator is already integrating.
+ */
+
+import { Scene, Timer, type Camera, type WebGLRenderer } from 'three';
+
+import {
+  BONE_COUNT,
+  CHANNEL_COUNT,
+  LAYER_WEIGHTS_DEFAULT,
+  TICK_HZ,
+  type CameraPresetId,
+  type KataId,
+  type Landmarks,
+  type PoseFrame,
+  type PoseTrack,
+  type RigHandles,
+  type TempoTier,
+} from '../contracts';
+import { CAMERA_PRESET_PARAMS, POST, getKata } from '../data';
+import { STAGES, STAGE_MASK_FULL, compileKata } from '../solve';
+
+/** One stage's `stageMask` bit, by id. Throws on a typo rather than silently masking nothing. */
+const stageBit = (id: string): number => {
+  const s = STAGES.find((x) => x.id === id);
+  if (s === undefined) throw new Error(`bootStage: no compile stage '${id}'`);
+  return s.bit;
+};
+/* Intra-block, so a deep path is legal here (`tests/contracts/imports.test.ts` restricts only
+ * CROSS-tree imports). Going through `./index` would be a cycle: the barrel re-exports this file. */
+import { createSampler } from './sampler';
+import { applyPose } from './poseApply';
+import { loadCharacter, type Character } from './character';
+import { buildChoreography, type Choreography } from './choreography';
+import { sampleCharacterLandmarks } from './characterLandmarks';
+import { addBvhClip } from './retarget';
+import {
+  buildKarateka,
+  createLandmarks,
+  karatekaStats,
+  sampleLandmarks,
+  type KaratekaStats,
+} from '../rig';
+import {
+  buildEnvironment,
+  buildLights,
+  buildStage,
+  buildPost,
+  createMaterials,
+  disposeLights,
+  disposeMaterials,
+  disposeStage,
+  refitShadow,
+  stageClipBox,
+  createRenderer,
+  type IblHandle,
+  type KataPostStack,
+  type LightRig,
+  type MaterialSet,
+  type StageHandle,
+} from '../render';
+import { CAMERA_KEY_ORDER, CAMERA_MEASUREMENT_ORDER, createCameraRig, type KataCameraRig } from './cameraRig';
+
+/* ═══════════════════════════════════════════════════════════════════════════════════════════════
+ * Options and handle
+ * ═══════════════════════════════════════════════════════════════════════════════════════════════ */
+
+export interface StageBootOpts {
+  readonly canvas: HTMLCanvasElement;
+  /** §6.6 quality tiers. `low` drops GTAO and bloom — the SwiftShader smoke path. */
+  readonly quality?: 'low' | 'high' | 'max';
+  /** `?harness=1`: pins 1024 x 1024 at DPR 1 and disables OrbitControls (§3.4.1). */
+  readonly harness?: boolean;
+  /** Keyboard camera presets and pointer wiring. Off in harness mode regardless. */
+  readonly interactive?: boolean;
+  /**
+   * Hand the view to `StillAccumulator` once the user stops moving (§5.3's progressive still).
+   * DEFAULT FALSE, and the reason is measured — see `IDLE_BEFORE_STILL_S` below. Harness mode
+   * ignores this and always accumulates, because a capture only ever reads the CONVERGED frame.
+   */
+  readonly progressiveStill?: boolean;
+  /**
+   * Compile this kata and play it. Omit for the Phase-1 static bind-pose view.
+   *
+   * The compile is SYNCHRONOUS and currently costs seconds, not the §4.11 target of 220 ms — it
+   * runs 6 800 full-body solves plus a 480 Hz probe pass. That is a real gap and it is a
+   * PERFORMANCE gap, not a correctness one; boot shows a status line rather than pretending the
+   * page is idle.
+   */
+  readonly kataId?: KataId;
+  readonly tempoTier?: TempoTier;
+  readonly startTick?: number;
+  /** Start playing immediately. `false` boots paused on `startTick`, which is what a capture wants. */
+  readonly autoplay?: boolean;
+  /** Called before the compile so the caller can put something on screen first. */
+  readonly onCompileStart?: (kataId: KataId) => void;
+  /**
+   * Called when a strict compile fails a stage gate and the boot falls back to an ADVISORY
+   * compile (§4.11's `stageMask`). The track still renders; it is not gate-clean. A caller that
+   * ignores this is showing a figure it has been told is wrong.
+   */
+  readonly onGateFail?: (message: string) => void;
+  /**
+   * Render the RIGGED, CLIP-DRIVEN character (`public/models/*.glb`) instead of the procedural
+   * figure driven by `compileKata`. Default true — see the header of `./character.ts` for why the
+   * procedural path was retired from the render path.
+   *
+   * `false` restores the Phase-2 behaviour, which is still the only way to LOOK at what the solver
+   * produces. `?rig=proc` sets it.
+   */
+  readonly proceduralRig?: boolean;
+  /** Override the character/clip glTF. `?model=Xbot.glb` sets it. */
+  readonly modelUrl?: string;
+  /** Fired when `[` / `]` auditions a different clip, so the caller can label it on screen. */
+  readonly onClipChange?: (name: string, index: number, total: number) => void;
+  /** Fired when the kata advances to a new count or ceremony phase. */
+  readonly onBeatChange?: (label: string, kiai: boolean, index: number) => void;
+  /** Open on the score-driven kata instead of the continuous capture. `?view=score` sets it. */
+  readonly scoreView?: boolean;
+  /** Which clip the continuous view opens on. Defaults to the retargeted Shotokan capture. */
+  readonly startClip?: string;
+}
+
+/**
+ * Quaternius's CC0 Universal Animation Library — one self-contained glTF carrying a rigged mesh AND
+ * 46 clips on the same Rigify skeleton, so it needs no retargeting step at all. Its `Punch_Jab`,
+ * `Punch_Cross` and `Punch_Enter` are the first real recorded strikes in the project.
+ *
+ * `Xbot.glb` remains beside it as the Mixamo-skeleton option: fewer clips (7), but any Mixamo FBX
+ * in existence retargets onto it by name, which is the path to actual Shotokan technique clips.
+ */
+export const DEFAULT_MODEL_URL = 'models/AnimLib.glb';
+
+/**
+ * Motion-capture files retargeted onto the character at boot.
+ *
+ * `startS`/`endS` slice one capture into named techniques — a mocap take is a continuous
+ * performance, not a clip library, so the ranges are how a 21.7 s session becomes usable pieces.
+ * Left unset the whole take is registered under one name, which is the right starting point before
+ * anyone has looked at where its techniques actually fall.
+ */
+export const MOCAP_CLIPS: readonly {
+  readonly name: string;
+  readonly url: string;
+  readonly startS?: number;
+  readonly endS?: number;
+  /**
+   * Whether the capture's own floor travel is kept.
+   *
+   * ═══ IT DEPENDS ON WHO OWNS THE TRAVEL ══════════════════════════════════════════════════════
+   *
+   * A clip the KATA SCORE drives must not translate: the score already lerps the root along the
+   * embusen, and a clip that also moved would fight it. A clip played WHOLE has no score behind it,
+   * so dropping its horizontal motion strands the performer — he steps through the entire kata
+   * without going anywhere, feet cycling on the spot.
+   *
+   * So it is per-entry, not global: `'full'` for a complete performance, the `'y'` default for the
+   * technique slices the score triggers.
+   */
+  readonly rootMotion?: 'none' | 'y' | 'full';
+}[] = Object.freeze([
+  /* Real Shotokan — Heian Nidan, 20 joints at 100 Hz, from an academic capture. The whole
+   * technique vocabulary of the Heian series is in here: gedan-barai, oi-zuki, age-uke, shuto-uke. */
+  { name: 'heian-nidan', url: 'models/mocap/heian-nidan.bvh', rootMotion: 'full' },
+
+  /* ── individual techniques, sliced out of that take ────────────────────────────────────────
+   *
+   * The windows were CHOSEN BY MEASUREMENT, not by eye. Every instant where a hand reaches ≥86 %
+   * arm extension and is a local maximum was collected — 31 across the take — and each scored on
+   * how its hand moved over the preceding 0.5 s, relative to the pelvis and to the direction the
+   * feet point:
+   *
+   *   oi-zuki      t=0.44  chudan height (+0.23 m), driving FORWARD (+0.16 m) and LEVEL (+0.04 m)
+   *   gedan-barai  t=22.96 DESCENDS 0.59 m while sweeping 0.47 m forward — the strongest downward
+   *                        sweep in the take, which is what a gedan-barai is
+   *
+   * Windows open ~0.9 s before kime so the wind-up is included; a technique that begins at its
+   * own impact reads as a twitch. Between the two they cover all 20 counts of Taikyoku Shodan. */
+  { name: 'mocap-oi-zuki', url: 'models/mocap/heian-nidan.bvh', startS: 1.35, endS: 2.6 },
+  /* Kept only to audition. A BVH parser's test fixture — see the source-quality note in
+   * `./retarget.ts`. Not wired into any technique. */
+  { name: 'karate', url: 'models/mocap/karate.bvh' },
+]);
+
+/** Numbers the self-verification pass and the HUD read. Not a frozen interface. */
+export interface StageStats {
+  /** Whole-frame draw calls: scene + every post pass. NOT §5.6's scene budget — see `sceneMeshes`. */
+  readonly drawCalls: number;
+  readonly triangles: number;
+  /** Opaque scene meshes, i.e. what §5.6's draw-call budget counts. */
+  readonly sceneMeshes: number;
+  readonly programs: number;
+  readonly bones: number;
+  readonly passes: readonly string[];
+  readonly quality: string;
+  readonly mode: string;
+  readonly stillSample: number;
+  readonly stillConverged: boolean;
+  readonly camera: string;
+  readonly canvasPx: readonly [number, number];
+  readonly dpr: number;
+  readonly frameMs: number;
+  readonly karateka: KaratekaStats | null;
+}
+
+/**
+ * The Phase-2 playback surface.
+ *
+ * Deliberately NOT `AppHandle` (§3.13): that shape also requires `cloth` and `weights`, and B7
+ * does not exist yet. This is the honest subset — a compiled track, a sampler over it, and a
+ * cursor — under a name that cannot be mistaken for the frozen one.
+ */
+export interface StageTransport {
+  readonly track: PoseTrack;
+  /** Current integer tick. Always inside `[0, durationTicks)`. */
+  tick: number;
+  playing: boolean;
+  /** Jump to an exact tick. Path-independent by construction (§6.1). */
+  seek(tick: number): void;
+  toggle(): void;
+  /** Playback rate multiplier. doc 02 §9 d10's 0.58x–1.05x range lives here. */
+  rate: number;
+}
+
+export interface StageBoot {
+  readonly renderer: WebGLRenderer;
+  readonly scene: Scene;
+  readonly materials: MaterialSet;
+  readonly ibl: IblHandle;
+  readonly lights: LightRig;
+  readonly stage: StageHandle;
+  readonly rig: RigHandles;
+  /** The clip-driven figure. `null` under `?rig=proc`, where `rig` is what you see instead. */
+  readonly character: Character | null;
+  /** B2's score driving that figure. `null` without a `kataId`, or on the procedural path. */
+  readonly choreography: Choreography | null;
+  readonly cameraRig: KataCameraRig;
+  readonly post: KataPostStack;
+  readonly landmarks: Landmarks;
+  /** `null` when `bootStage` was called without a `kataId` — the Phase-1 static-pose path. */
+  readonly transport: StageTransport | null;
+  setCameraPreset(id: string, exact?: boolean): void;
+  stats(): StageStats;
+  dispose(): void;
+
+  /* ── kata transport, for a HUD to drive instead of the keyboard ─────────────────────────── */
+  /** Jump to a beat by index and hold there. Out-of-range wraps, matching the arrow keys. */
+  goToBeat(index: number): void;
+  /** `undefined` toggles. */
+  setPlaying(play?: boolean): void;
+  readonly playing: boolean;
+  /** Index of the beat currently showing, or `-1` without a kata. */
+  readonly beatIndex: number;
+  /**
+   * Play ONE clip on loop, suspending the kata score — the only way to watch a raw or retargeted
+   * clip end to end. `null` hands control back to the score.
+   */
+  soloClip(name: string | null): void;
+  /** The clip being auditioned, or `null` when the score is driving. */
+  readonly solo: string | null;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════════════════════
+ * Boot
+ * ═══════════════════════════════════════════════════════════════════════════════════════════════ */
+
+/**
+ * Seconds of no interaction before the still accumulator takes over, WHEN it is enabled.
+ *
+ * ═══ WHY `progressiveStill` DEFAULTS TO FALSE — MEASURED, NOT PREFERENCE ══════════════════════
+ *
+ * `StillAccumulator.accumulate` blits each sample with a FIXED weight `1 / samples`
+ * (`still.ts:382`), and `present()` blits the accumulation target RAW (`still.ts:398-405`). So after
+ * `k` of `N` samples the screen shows `k/N` of the correct exposure: at `k = 1` that is 3 % of
+ * full brightness — near black — reaching correct exposure only at `k = N`.
+ *
+ * At convergence the sum of weights is exactly 1, so the CONVERGED still and every captured PNG are
+ * correct, which is why B5's own tests and browser check are green: they measure at `k = N`. The
+ * defect is confined to the INTERACTIVE progressive path, and B6 is the only block that drives it.
+ * Observed with real pixels: a frame grabbed mid-accumulation reads `lumaMean 14.65` against
+ * `113.91` for the same converged view — a 7.8x under-exposure, i.e. every mouse-stop would fade the
+ * dojo up from black over 32 display frames (0.53 s at 60 fps; ~30 s under SwiftShader).
+ *
+ * A progressive present has to normalise by the samples accumulated SO FAR (`1/k`), not by the
+ * final count. That is a one-line change in `present()` — B5's file, so it is a handoff, and this
+ * flag is the fence until it lands. `?still=1` opts in for anyone wanting to look at a converged
+ * frame interactively.
+ */
+const IDLE_BEFORE_STILL_S = 0.35;
+
+export async function bootStage(o: StageBootOpts): Promise<StageBoot> {
+  const harness = o.harness === true;
+  const interactive = harness ? false : o.interactive !== false;
+  const progressiveStill = harness || o.progressiveStill === true;
+  const quality = o.quality ?? 'high';
+
+  /* ── §5.1 [1] renderer ────────────────────────────────────────────────────────────────────── */
+  const renderer = createRenderer(o.canvas, { harness });
+  // `info` resets itself at the start of EVERY renderer.render(), and a still frame ends with the
+  // accumulator's one-quad present() — so an unmanaged read reports `calls: 1`, which is a lie about
+  // §5.6's draw budget. Reset once per frame instead and read the whole frame's total.
+  renderer.info.autoReset = false;
+
+  /* ── §5.1 [2] scene ──────────────────────────────────────────────────────────────────────── */
+  const scene = new Scene();
+  scene.name = 'dojo';
+
+  /* ── §5.1 [3] IBL. BEFORE any material that reads it (doc 05 §14.1 #14). ─────────────────── */
+  const ibl = buildEnvironment(renderer, scene);
+
+  /* ── §5.1 [4] lights. `buildLights` adds all four targets and configures KEY's shadow. ───── */
+  const lights = buildLights(scene);
+
+  /* ── §5.1 [5] materials, then the stage that owns the floor maps ──────────────────────────── */
+  const materials = createMaterials();
+  const stage = buildStage(scene, materials);
+
+  /* ── §5.1 [6] the karateka ────────────────────────────────────────────────────────────────
+   *
+   * BOTH figures are built. The procedural rig stays in the graph even when the clip-driven
+   * character is on screen, because `?rig=proc` is still the only way to look at what the retired
+   * solver produces, and because `sampleLandmarks` is written against `RigHandles` and seeds the
+   * `Landmarks` buffer before the character exists. It is made INVISIBLE rather than omitted:
+   * `visible = false` skips the draw but keeps the hierarchy that path reads.
+   *
+   * `refitShadow` no longer needs it — that takes `RigHandles | Landmarks` now, and on the clip
+   * path it is handed the landmarks resampled from the character every frame. */
+  const rig = buildKarateka(materials);
+  scene.add(rig.root);
+  rig.root.updateMatrixWorld(true);
+
+  const landmarks = createLandmarks();
+  sampleLandmarks(rig, 0, landmarks);
+
+  const useProcedural = o.proceduralRig === true;
+  let character: Character | null = null;
+  if (!useProcedural) {
+    character = await loadCharacter(o.modelUrl ?? DEFAULT_MODEL_URL);
+    scene.add(character.root);
+    character.root.updateMatrixWorld(true);
+    /* First clip that exists, in preference order — the two libraries name their idle differently
+     * and a missing name must not leave the figure frozen in bind pose. */
+    for (const name of ['Idle_Loop', 'idle', ...character.clipNames]) {
+      if (character.play(name, 0) !== null) break;
+    }
+    rig.root.visible = false;
+
+    /* ── real karate, retargeted from motion capture ──────────────────────────────────────────
+     *
+     * The CC0 clip library has no karate in it — boxing punches, and no blocks at all. Actual
+     * Shotokan motion exists only as mocap, so `karate.bvh` (18-joint BioVision, 21.7 s) is baked
+     * onto this character's skeleton at boot and registered as an ordinary clip.
+     *
+     * NON-FATAL by design: a missing or malformed capture must degrade to "the library clips only",
+     * not to a dojo that will not boot. The warning names the file so the cause is not a mystery. */
+    for (const m of MOCAP_CLIPS) {
+      try {
+        await addBvhClip(character, m.url, {
+          name: m.name,
+          startS: m.startS,
+          endS: m.endS,
+          rootMotion: m.rootMotion,
+        });
+      } catch (err) {
+        console.warn(`[kata] mocap '${m.name}' (${m.url}) did not load — continuing without it`, err);
+      }
+    }
+  }
+
+  /* ── the kata score, driving that character ──────────────────────────────────────────────── */
+  let choreography: Choreography | null = null;
+  let kataTimeS = 0;
+  let kataPlaying = o.autoplay !== false;
+  /* Declared HERE and not beside the key handler: `frame` closes over both, and `setAnimationLoop`
+   * is installed above those declarations. rAF makes that safe today, but only by timing. */
+  const onBeatChange = o.onBeatChange;
+  let lastBeatLabel = '';
+  /** Non-null while a single clip is being auditioned; the kata score is suspended meanwhile. */
+  let soloClipName: string | null = null;
+
+  /**
+   * ═══ THE DEFAULT VIEW IS THE CAPTURE, PLAYED WHOLE ═══════════════════════════════════════════
+   *
+   * The score-driven view assembles a kata from 1–1.5 s clip fragments, crossfading between them
+   * while the root is lerped along the embusen independently. Three things follow from that, and
+   * all three were observed:
+   *
+   *   * every count starts and ends abruptly, because a fragment has no follow-through;
+   *   * transitions are a blend between two unrelated poses, and a blend takes the SHORT PATH in
+   *     quaternion space with no notion of the body being in the way — which is how a hand ends up
+   *     passing through the head;
+   *   * the technique is only ever as right as the window someone chose for it.
+   *
+   * None of that is fixable by choosing better fragments. A continuous capture has real
+   * follow-through, real weight transfer, and no interpolation artefacts, because a human did it
+   * in one take. `?view=score` still opens the score-driven view — it is the thing B2's data
+   * drives, and it is where the embusen and timing work is visible.
+   */
+  if (character !== null && o.kataId !== undefined) {
+    choreography = buildChoreography(getKata(o.kataId), character);
+    /* Seed the landmarks from the character's OPENING position. `createCameraRig` below places its
+     * initial pose from these, so without this the camera boots framing the embusen origin and
+     * swings to the character on frame one. */
+    character.root.updateMatrixWorld(true);
+    sampleCharacterLandmarks(character, 0, landmarks);
+  }
+
+  if (character !== null && o.scoreView !== true) {
+    const start = o.startClip ?? 'heian-nidan';
+    if (character.clips.has(start)) {
+      soloClipName = start;
+      character.play(start, 0, { loop: 'repeat' });
+    }
+  }
+
+  /* ── §5.1 [7] camera ─────────────────────────────────────────────────────────────────────── */
+  // Declared BEFORE createCameraRig: the rig places its initial pose inside its own constructor and
+  // that fires `onViewChange` synchronously, so a `let` declared below would be in its TDZ.
+  let idleS = 0;
+  let post: KataPostStack | null = null;
+  const cameraRig = createCameraRig({
+    domElement: harness ? null : o.canvas,
+    aspect: viewAspect(renderer, o.canvas),
+    onCameraSwap: (c: Camera) => post?.setCamera(c),
+    onViewChange: () => {
+      // Any view change invalidates accumulated samples (§5.3).
+      post?.resetStill();
+      idleS = 0;
+    },
+  });
+  cameraRig.update(0, landmarks);
+
+  /* ── §5.1 [8] composer ───────────────────────────────────────────────────────────────────── */
+  post = buildPost(renderer, scene, cameraRig.camera, { quality, clipBox: stageClipBox() });
+  const postStack: KataPostStack = post;
+
+  /* Mode B shadow fit. Cheap (§6.6 budgets 0.02 ms) and re-run every frame once posing lands.
+   * Fit the figure that is ON SCREEN: `landmarks` is resampled from the character every frame, while
+   * `rig` never leaves bind pose at the origin once the clip path owns the render. */
+  refitShadow(character !== null ? landmarks : rig, lights.key, cameraRig.camera);
+
+  /* ── §5.1 [9] compile every program before the first frame ───────────────────────────────── */
+  await renderer.compileAsync(scene, cameraRig.camera);
+
+  /* ── compile + sampler, if a kata was asked for ──────────────────────────────────────────── */
+  let transport: StageTransport | null = null;
+  let source: ReturnType<typeof createSampler> | null = null;
+  let poseFrame: PoseFrame | null = null;
+  /* The compile runs ONLY for the procedural path now. It costs seconds of blocked main thread and
+   * its output drives nothing the clip path renders, so paying for it by default would be a
+   * multi-second boot stall in exchange for an unread `Float32Array`. */
+  if (o.kataId !== undefined && useProcedural) {
+    o.onCompileStart?.(o.kataId);
+    /**
+     * STRICT FIRST, THEN ADVISORY — and say so loudly.
+     *
+     * §4.11: "A stage mask that is not full sets `flags.stageMask` in `run.json` and makes every
+     * gate ADVISORY." That is the sanctioned mechanism for looking at a pose whose gates are not
+     * yet green, and it is the right one here: a build gate that stops the dev preview from
+     * rendering at all makes the pose impossible to inspect, which is precisely when you most
+     * need to see it.
+     *
+     * What it must never do is fail quietly. The failing stage is reported through `onGateFail`
+     * so the caller can put it on screen, and a track compiled this way is NOT gate-clean — it is
+     * a diagnostic view. `npm test` still runs the strict path and still fails.
+     */
+    const opts = { tempoTier: o.tempoTier ?? 'T1', codeVersion: 'phase2' };
+    let track: PoseTrack;
+    try {
+      track = compileKata(getKata(o.kataId), opts);
+    } catch (err) {
+      if (!(err instanceof Error) || !err.message.startsWith('stage ')) throw err;
+      o.onGateFail?.(err.message);
+      const advisory = STAGE_MASK_FULL & ~stageBit('S13') & ~stageBit('S14');
+      track = compileKata(getKata(o.kataId), { ...opts, stageMask: advisory });
+    }
+    source = createSampler(track);
+    /* Caller-owned scratch, allocated ONCE. §3.9: "the sampler never allocates." */
+    poseFrame = {
+      q: new Float32Array(BONE_COUNT * 4),
+      rootPos: new Float32Array(3),
+      rootQuat: new Float32Array(4),
+      chan: new Float32Array(CHANNEL_COUNT),
+      scaleRibcage: new Float32Array(3),
+    };
+    const clampTick = (t: number): number =>
+      ((Math.round(t) % track.durationTicks) + track.durationTicks) % track.durationTicks;
+    transport = {
+      track,
+      tick: clampTick(o.startTick ?? 0),
+      playing: o.autoplay ?? true,
+      rate: 1,
+      seek(t: number): void {
+        this.tick = clampTick(t);
+      },
+      toggle(): void {
+        this.playing = !this.playing;
+      },
+    };
+  }
+
+  /* ── frame loop ──────────────────────────────────────────────────────────────────────────── */
+  const timer = new Timer();
+  let frameMs = 0;
+  let drawCalls = 0;
+  let triangles = 0;
+  let disposed = false;
+
+  const markInteraction = (): void => {
+    idleS = 0;
+    if (progressiveStill && postStack.mode !== 'play') postStack.setMode('play');
+  };
+
+  const frame = (time: number): void => {
+    if (disposed) return;
+    timer.update(time);
+    const dt = timer.getDelta();
+    renderer.info.reset();
+
+    /* ── §6.1's whole runtime read path: advance a tick, sample, apply. ────────────────────
+     *
+     * The tick is advanced from the frame's own `dt`, but the POSE is a pure function of the
+     * resulting integer — nothing accumulates in the pose itself. That is what makes a scrub, a
+     * reverse step and a cold seek produce identical bytes, and it is why `transport.tick` can be
+     * written from outside at any time with no re-sync. */
+    if (transport !== null && source !== null && poseFrame !== null) {
+      if (transport.playing) {
+        transport.tick =
+          (transport.tick + dt * TICK_HZ * transport.rate) % transport.track.durationTicks;
+      }
+      source.sample(Math.round(transport.tick), LAYER_WEIGHTS_DEFAULT, poseFrame);
+      applyPose(rig, poseFrame);
+      /* The sampler and `applyPose` both stay off the matrix walk (§6.6 budgets it separately),
+       * so the caller does it once, here, before anything reads a world position. */
+      rig.root.updateMatrixWorld(true);
+    }
+
+    /* The clip path. The score moves the root and picks the clip; the mixer writes the bones. Order
+     * matters: `choreography.update` may start a crossfade that `mixer.update` must then advance in
+     * the SAME frame, or the first frame of every technique renders at the outgoing clip's pose. */
+    if (character !== null) {
+      /* A solo clip SUSPENDS the score rather than competing with it: `choreography.update` picks a
+       * clip every frame, so leaving it running would overwrite the auditioned one instantly. */
+      if (choreography !== null && soloClipName === null) {
+        if (kataPlaying) kataTimeS += dt;
+        choreography.update(kataTimeS);
+        const beat = choreography.beats[choreography.at];
+        if (beat !== undefined && beat.label !== lastBeatLabel) {
+          lastBeatLabel = beat.label;
+          onBeatChange?.(beat.label, beat.kiai, choreography.at);
+        }
+      }
+      character.update(dt);
+      character.root.updateMatrixWorld(true);
+      /* Landmarks come from the figure that is actually on screen. Without this the camera frames,
+       * and the shadow fits, the invisible procedural rig standing back at the embusen origin. */
+      sampleCharacterLandmarks(character, 0, landmarks);
+    }
+
+    cameraRig.update(dt, landmarks);
+    /* Same source as the camera. `?rig=proc` still fits the bones directly: nothing resamples
+     * `landmarks` from the procedural rig inside this loop, so they would be a bind-pose snapshot. */
+    refitShadow(character !== null ? landmarks : rig, lights.key, cameraRig.camera);
+
+    if (progressiveStill) {
+      // Harness mode never plays: the capture path is snapTo + settle (§6.3 determinism ledger).
+      idleS += dt;
+      if ((harness || idleS > IDLE_BEFORE_STILL_S) && postStack.mode === 'play') {
+        postStack.setMode('still');
+      }
+    }
+
+    postStack.render(dt);
+    frameMs = dt * 1000;
+    drawCalls = renderer.info.render.calls;
+    triangles = renderer.info.render.triangles;
+  };
+
+  renderer.setAnimationLoop(frame);
+
+  /* ── resize ──────────────────────────────────────────────────────────────────────────────── */
+  const applySize = (): void => {
+    if (harness) return; // pinned 1024 x 1024 DPR 1
+    const w = o.canvas.clientWidth || 1600;
+    const h = o.canvas.clientHeight || 900;
+    const dpr = typeof devicePixelRatio === 'number' ? devicePixelRatio : 1;
+    postStack.setSize(w, h, Math.min(dpr, POST.maxPixelRatio.v));
+    cameraRig.setSize(w, h);
+    markInteraction();
+  };
+  applySize();
+
+  const ro =
+    typeof ResizeObserver === 'function' && !harness ? new ResizeObserver(() => applySize()) : null;
+  ro?.observe(o.canvas);
+
+  /* ── input: §6.7's `1`-`9` camera presets, plus `0`/`m` for the measurement cameras ──────── */
+  const setCameraPreset = (id: string, exact = false): void => {
+    // Validated against B1's own table rather than against a second list of names, so an unknown id
+    // from the URL or a stale keybinding is a no-op instead of an undefined-preset crash.
+    if (!(id in CAMERA_PRESET_PARAMS)) return;
+    const preset = id as CameraPresetId;
+    if (exact) cameraRig.snapTo(preset);
+    else cameraRig.setPreset(preset);
+    markInteraction();
+  };
+
+  const onClipChange = o.onClipChange;
+  let measurementCursor = 0;
+  const onKeyDown = (e: KeyboardEvent): void => {
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    const k = e.key;
+    if (k >= '1' && k <= '9') {
+      const preset = CAMERA_KEY_ORDER[Number(k) - 1];
+      if (preset !== undefined) setCameraPreset(preset);
+      return;
+    }
+    if (k === '0') {
+      setCameraPreset('M_TOP', true);
+      return;
+    }
+    if (k === 'm' || k === 'M') {
+      const preset = CAMERA_MEASUREMENT_ORDER[measurementCursor % CAMERA_MEASUREMENT_ORDER.length];
+      measurementCursor++;
+      if (preset !== undefined) setCameraPreset(preset, true);
+      return;
+    }
+    if (k === 'r' || k === 'R') setCameraPreset('ORBIT', true);
+
+    /* `[` / `]` walk the clip list. The whole point of loading a 46-clip library is being able to
+     * LOOK at what is in it; a library you cannot audition is a library you cannot choose from. */
+    if (character !== null && (k === '[' || k === ']')) {
+      const names = character.clipNames;
+      const at = character.current === null ? -1 : names.indexOf(character.current);
+      const next = (at + (k === ']' ? 1 : -1) + names.length) % names.length;
+      const name = names[next];
+      if (name !== undefined) {
+        character.play(name);
+        onClipChange?.(name, next, names.length);
+      }
+      markInteraction();
+      return;
+    }
+
+    /* Transport over the kata score. SPACE toggles; the arrows jump whole COUNTS rather than
+     * frames, because "show me count 7" is the question a reviewer actually asks of a kata. */
+    if (choreography !== null) {
+      const jumpTo = (idx: number): void => {
+        const list = choreography!.beats;
+        const b = list[((idx % list.length) + list.length) % list.length];
+        if (b === undefined) return;
+        kataTimeS = b.startS;
+        choreography!.invalidate();
+        choreography!.update(kataTimeS);
+        markInteraction();
+      };
+      if (k === ' ' || k === 'Spacebar') {
+        kataPlaying = !kataPlaying;
+        e.preventDefault();
+        markInteraction();
+        return;
+      }
+      if (k === 'ArrowRight') return jumpTo(choreography.at + 1);
+      if (k === 'ArrowLeft') return jumpTo(choreography.at - 1);
+      if (k === 'Home') {
+        kataTimeS = 0;
+        choreography.invalidate();
+        choreography.update(0);
+        markInteraction();
+        return;
+      }
+    }
+
+    /* Transport keys. Space toggles; the arrows scrub by one 60 fps display frame
+     * (`DISPLAY_TICKS = 64`), which is the granularity a reviewer actually steps at. */
+    if (transport === null) return;
+    if (k === ' ' || k === 'Spacebar') {
+      transport.toggle();
+      e.preventDefault();
+      markInteraction();
+      return;
+    }
+    if (k === 'ArrowRight') { transport.seek(transport.tick + 64); markInteraction(); return; }
+    if (k === 'ArrowLeft') { transport.seek(transport.tick - 64); markInteraction(); return; }
+    if (k === 'Home') { transport.seek(0); markInteraction(); }
+  };
+
+  const onPointerDown = (): void => markInteraction();
+  const onWheel = (): void => markInteraction();
+
+  if (interactive) {
+    window.addEventListener('keydown', onKeyDown);
+    o.canvas.addEventListener('pointerdown', onPointerDown);
+    o.canvas.addEventListener('wheel', onWheel, { passive: true });
+    cameraRig.controls?.addEventListener('change', markInteraction);
+  }
+
+  /* ── handle ──────────────────────────────────────────────────────────────────────────────── */
+  const boot: StageBoot = {
+    renderer,
+    scene,
+    materials,
+    ibl,
+    lights,
+    stage,
+    rig,
+    character,
+    choreography,
+    cameraRig,
+    post: postStack,
+    landmarks,
+    transport,
+    setCameraPreset,
+
+    goToBeat(index: number): void {
+      if (choreography === null) return;
+      const list = choreography.beats;
+      if (list.length === 0) return;
+      const b = list[((index % list.length) + list.length) % list.length];
+      if (b === undefined) return;
+      soloClipName = null;
+      kataTimeS = b.startS;
+      choreography.invalidate();
+      choreography.update(kataTimeS);
+      lastBeatLabel = b.label;
+      onBeatChange?.(b.label, b.kiai, choreography.at);
+      markInteraction();
+    },
+
+    setPlaying(play?: boolean): void {
+      kataPlaying = play ?? !kataPlaying;
+      markInteraction();
+    },
+    get playing(): boolean {
+      return kataPlaying;
+    },
+    get beatIndex(): number {
+      return choreography?.at ?? -1;
+    },
+
+    soloClip(name: string | null): void {
+      if (character === null) return;
+      soloClipName = name;
+      if (name !== null) {
+        character.play(name, 0.2, { loop: 'repeat', timeScale: 1 });
+      } else if (choreography !== null) {
+        /* Re-arm the technique trigger: the score fires each beat's clip once, and returning from
+         * an audition mid-beat would otherwise skip it until the next count. */
+        choreography.invalidate();
+        choreography.update(kataTimeS);
+      }
+      markInteraction();
+    },
+    get solo(): string | null {
+      return soloClipName;
+    },
+
+    stats(): StageStats {
+      const info = renderer.info;
+      return {
+        // Whole-frame totals, snapshotted inside the loop: scene draws PLUS every post pass. §5.6's
+        // 11-mesh scene budget is `sceneMeshes` below; the two numbers measure different things.
+        drawCalls,
+        triangles,
+        sceneMeshes: countSceneMeshes(scene),
+        programs: info.programs?.length ?? 0,
+        bones: rig.bones.length,
+        passes: postStack.instantiatedPasses,
+        quality: postStack.quality,
+        mode: postStack.mode,
+        stillSample: postStack.stillSample,
+        stillConverged: postStack.stillConverged,
+        camera: cameraRig.active,
+        canvasPx: [o.canvas.width, o.canvas.height],
+        dpr: renderer.getPixelRatio(),
+        frameMs,
+        karateka: karatekaStats(),
+      };
+    },
+
+    dispose(): void {
+      if (disposed) return;
+      disposed = true;
+      renderer.setAnimationLoop(null);
+      ro?.disconnect();
+      if (interactive) {
+        window.removeEventListener('keydown', onKeyDown);
+        o.canvas.removeEventListener('pointerdown', onPointerDown);
+        o.canvas.removeEventListener('wheel', onWheel);
+        cameraRig.controls?.removeEventListener('change', markInteraction);
+      }
+      cameraRig.dispose();
+      postStack.dispose();
+      character?.dispose();
+      scene.remove(rig.root);
+      disposeStage(scene, stage);
+      disposeLights(scene, lights);
+      disposeMaterials(materials);
+      ibl.dispose();
+      renderer.dispose();
+    },
+  };
+
+  return boot;
+}
+
+/** §5.6's draw-call budget counts opaque scene meshes. Its own table sums to 11, not the stated 12. */
+function countSceneMeshes(scene: Scene): number {
+  let n = 0;
+  scene.traverse((o) => {
+    if ((o as { isMesh?: boolean }).isMesh === true) n++;
+  });
+  return n;
+}
+
+/** Aspect of the drawing buffer, falling back to the canvas attribute size. */
+function viewAspect(renderer: WebGLRenderer, canvas: HTMLCanvasElement): number {
+  const w = canvas.clientWidth || canvas.width || renderer.domElement.width || 1;
+  const h = canvas.clientHeight || canvas.height || renderer.domElement.height || 1;
+  return h > 0 ? w / h : 1;
+}

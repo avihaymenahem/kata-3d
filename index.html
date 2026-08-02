@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>Kata 3D — Shotokan kata viewer</title>
+    <style>
+      /*
+        B6 PLAYER owns index.html (docs/OWNERSHIP.md). This stylesheet is deliberately LAYOUT ONLY:
+        `src/ui/theme.css` is B8's file and every visual style for the timeline, labels, HUD and
+        lil-gui belongs there. What lives here is the canvas geometry, the overlay roots B8 mounts
+        into, and a boot banner — because a black canvas and a failed boot look identical, and the
+        one thing this page must never do is fail silently.
+      */
+      :root {
+        --kata-bg: #0b0c0e;
+        --kata-fg: #cbd2d9;
+        --kata-dim: #7c8894;
+        --kata-accent: #7dd3a0;
+        --kata-error: #ff6b6b;
+      }
+
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        overflow: hidden;
+        background: var(--kata-bg);
+        color: var(--kata-fg);
+        font: 13px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+      }
+
+      #kata-stage {
+        position: fixed;
+        inset: 0;
+      }
+
+      /*
+        `touch-action: none` is not cosmetic: without it a touch drag scrolls the page instead of
+        reaching OrbitControls, and the 360-degree orbit this product is built around does not work
+        on any tablet. `display: block` kills the inline-element baseline gap that otherwise makes
+        the canvas 4-5 px taller than its box and drives a ResizeObserver feedback loop.
+      */
+      #kata-canvas {
+        display: block;
+        width: 100%;
+        height: 100%;
+        touch-action: none;
+        outline: none;
+      }
+
+      /* Overlay roots. B8 (src/ui/**) mounts the timeline, labels and HUD into these. */
+      #ui-root,
+      #hud-root {
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+      }
+      #ui-root > *,
+      #hud-root > * {
+        pointer-events: auto;
+      }
+
+      #boot-status {
+        position: fixed;
+        inset: 0;
+        display: grid;
+        place-items: center;
+        padding: 6vh 6vw;
+        background: var(--kata-bg);
+        text-align: center;
+        z-index: 10;
+      }
+      #boot-status[hidden] {
+        display: none;
+      }
+      #boot-status .msg {
+        max-width: 70ch;
+        white-space: pre-wrap;
+        text-align: left;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 12px;
+        color: var(--kata-dim);
+      }
+      #boot-status.failed .msg {
+        color: var(--kata-error);
+      }
+      #boot-status h1 {
+        margin: 0 0 0.75rem;
+        font-size: 15px;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: var(--kata-accent);
+      }
+      #boot-status.failed h1 {
+        color: var(--kata-error);
+      }
+
+      #kata-hint {
+        position: fixed;
+        left: 12px;
+        bottom: 10px;
+        color: var(--kata-dim);
+        font-size: 11px;
+        letter-spacing: 0.02em;
+        pointer-events: none;
+        text-shadow: 0 1px 2px rgba(0, 0, 0, 0.85);
+      }
+      #kata-hint b {
+        color: var(--kata-fg);
+        font-weight: 600;
+      }
+      #kata-hint[hidden] {
+        display: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="kata-stage">
+      <!-- The one and only canvas. src/player/app.ts hands it to createRenderer (§5.1). -->
+      <canvas id="kata-canvas" tabindex="0"></canvas>
+    </div>
+
+    <!-- Mount points for B8's timeline / labels / HUD. Intentionally empty in Phase 1. -->
+    <div id="ui-root"></div>
+    <div id="hud-root"></div>
+
+    <div id="boot-status">
+      <div>
+        <h1>Kata 3D</h1>
+        <div class="msg">booting the dojo…</div>
+      </div>
+    </div>
+
+    <div id="kata-hint" hidden>
+      drag to orbit · scroll to zoom · <b>1-9</b> camera presets · <b>0</b> overhead ·
+      <b>m</b> cycle measurement cams · <b>r</b> reset
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.vite/
+# critic-loop artifacts: captured frames + scorecards are regenerated, never committed
+captures/
+reports/
+*.local
+.DS_Store

@@ -1,0 +1,38 @@
+{
+  "name": "kata-3d",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "AAA 3D karate kata simulator — a 360° kata viewer built on Three.js",
+  "scripts": {
+    "dev": "vite --port 5178 --strictPort",
+    "build": "vite build",
+    "preview": "vite preview --port 5178 --strictPort",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+
+    "build:track": "node tools/build-track.mjs",
+    "score": "node tools/score.mjs",
+    "shots": "node tools/capture.mjs",
+    "sheets": "node tools/contactsheet.mjs",
+    "brief": "node tools/criticPrompt.mjs",
+    "critic": "node tools/critic.mjs",
+    "route": "node tools/fix-route.mjs",
+    "verify": "node tools/verify-all.mjs",
+    "own": "node tools/verifyOwnership.mjs",
+    "bench": "node tools/bench.mjs",
+    "calibrate": "node tools/calibrate-envelope.mjs"
+  },
+  "dependencies": {
+    "lil-gui": "^0.21.0",
+    "three": "^0.185.1"
+  },
+  "devDependencies": {
+    "@types/three": "^0.185.0",
+    "playwright": "^1.62.1",
+    "typescript": "^5.9.2",
+    "vite": "^8.2.0",
+    "vitest": "^3.2.4"
+  }
+}
