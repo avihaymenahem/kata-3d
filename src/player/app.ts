@@ -77,6 +77,7 @@ import { buildChoreography, type Beat, type Choreography } from './choreography'
 import { sampleCharacterLandmarks } from './characterLandmarks';
 import { addBvhClip } from './retarget';
 import { createFootIk, type FootIk } from './footIk';
+import { createSelfCollision, type SelfCollision } from './selfCollision';
 import { createHandShaper, type HandShaper } from './handShape';
 import { attachGi, type GiHandle } from './gi';
 import { attachFacialHair, type FacialHairHandle } from './facialHair';
@@ -587,7 +588,22 @@ export async function bootStage(o: StageBootOpts): Promise<StageBoot> {
    * Measured on `heian-nidan`: sole penetration -0.204 m -> -0.041 m, float +0.055 m -> +0.009 m,
    * mean sole height exactly 0.000, and no knee inversion introduced. 0.078 ms/frame.
    */
+  /**
+   * Self-collision — the karateka's own hands and forearms against his head and torso.
+   *
+   * Retargeting transfers joint ANGLES, not clearances, and this character is not the shape of the
+   * performer who was captured. Measured against each skeleton's own stature the ARMS agree to
+   * 0.2 % — but the torso is +23 % and the head stack above the chest +19 %, which turns 13
+   * head-penetrating frames in the source into 86 after retargeting.
+   *
+   * That measurement is also why proportion matching was rejected rather than tried: there is
+   * nothing to scale on the arms, matching would mean shrinking this character's head by 19 %, and
+   * it would faithfully reproduce the capture's OWN 13 bad frames — the performer's right wrist
+   * passes 0.013 m from his own head axis at t = 0.67.
+   */
   const footIk: FootIk | null = character !== null ? createFootIk(character) : null;
+  const selfCollision: SelfCollision | null =
+    character !== null ? createSelfCollision(character) : null;
 
   /**
    * Hand shapes. The capture has no fingers at all, so without this the karateka punches with an
@@ -945,6 +961,12 @@ export async function bootStage(o: StageBootOpts): Promise<StageBoot> {
       character.root.updateMatrixWorld(true);
       /* Landmarks come from the figure that is actually on screen. Without this the camera frames,
        * and the shadow fits, the invisible procedural rig standing back at the embusen origin. */
+      /* BEFORE the foot IK, not after. Foot IK documents itself as the last write to the skeleton,
+       * and the two are disjoint — this writes upper arm / forearm / hand, that writes pelvis and
+       * legs — so neither undoes the other. The pelvis shift translates the whole upper body
+       * rigidly and changes no arm-to-torso clearance, so the order does not affect the solve. */
+      selfCollision?.update(dt);
+
       /* LAST write to the skeleton this frame, by construction — see `createFootIk`. Landmarks are
        * sampled after it so the camera and the contact shadow track the GROUNDED figure. */
       footIk?.update(dt);
@@ -1296,6 +1318,7 @@ export async function bootStage(o: StageBootOpts): Promise<StageBoot> {
       postStack.dispose();
       gi?.dispose();
       facialHair?.dispose();
+      selfCollision?.dispose();
       footIk?.dispose();
       handShaper?.dispose();
       character?.dispose();
