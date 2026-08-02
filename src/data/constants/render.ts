@@ -213,9 +213,22 @@ export const SHADOW_DO_NOT_SET: readonly string[] = Object.freeze(['blurSamples'
 
 export const POST: Readonly<Record<string, Num>> = Object.freeze({
   /* UnrealBloomPass. `resolution` MUST be the canvas size — the 256² ctor default mis-spaces the mips. */
-  bloomStrength: N(0.22, 'ratio', 0.1, 'docs/research/05-threejs-api.md §8.5', 'DERIVED'),
+  /**
+   * ═══ RETUNED FOR THE GI ══════════════════════════════════════════════════════════════════════
+   *
+   * doc 05 §8.5's 0.22 / 0.92 were set when the brightest thing in frame was skin. The karateka now
+   * wears a white gi — `0xf2f0ea`, roughness 0.78 — and it is the largest bright surface in almost
+   * every shot. A threshold of 0.92 is low enough that plain LIT WHITE CLOTH qualifies as an
+   * emitter, so the whole uniform glowed instead of just its highlights.
+   *
+   * Threshold up, strength down: the first stops diffuse cloth crossing the line at all, the second
+   * softens what genuinely does cross it — a specular glint off a fold, which SHOULD bloom. Both
+   * land inside the tolerances already on these rows (0.86–0.98 and 0.12–0.32), so no `tol` moved
+   * and no doc value was overridden, only re-chosen within its stated band.
+   */
+  bloomStrength: N(0.16, 'ratio', 0.1, 'docs/research/05-threejs-api.md §8.5', 'DERIVED'),
   bloomRadius: N(0.55, 'ratio', 0.2, 'docs/research/05-threejs-api.md §8.5', 'DERIVED'),
-  bloomThreshold: N(0.92, 'ratio', 0.06, 'docs/research/05-threejs-api.md §8.5', 'DERIVED'),
+  bloomThreshold: N(0.97, 'ratio', 0.06, 'docs/research/05-threejs-api.md §8.5', 'DERIVED'),
   bloomMips: N(5, 'count', 0, 'docs/research/05-threejs-api.md §8.5', 'DERIVED'),
 
   /* GTAOPass. NOT optional: it is what produces the dark crease where the gi meets the floor. */

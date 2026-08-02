@@ -88,26 +88,14 @@ export const ORBIT_CONTROLS = Object.freeze({
   dampingFactor: 0.05,
   minDistanceM: 1.6,
   /**
-   * §5.7 authored 9.0 m. Reduced to 7.2 because 9.0 IS NOT REACHABLE without tearing a hole in
-   * the dojo.
+   * §5.7's authored 9.0 m, restored.
    *
-   * ═══ THE GEOMETRY ════════════════════════════════════════════════════════════════════════════
-   *
-   * `M_FAR_H = 10` puts every preset's far plane at 10 · H = 17.5 m, and the hall measures 16.6 m
-   * across, so its far wall sits at roughly `d + 8.3` m of depth from a camera orbiting at `d`.
-   * The chamfered corners reach further still. Past about 7.5 m of dolly they cross the far plane
-   * and get clipped, and what shows through the gap is the background colour — the black artefact
-   * on the wall, worst at full zoom-out, which is exactly where the frustum is tightest.
-   *
-   * Three ways out, and only one is available here. `M_FAR_H` lives in `src/contracts/units.ts`,
-   * which is hash-frozen. Shrinking the hall would make a 16.6 m dojo into something smaller than
-   * a real one. Capping the orbit costs 1.8 m of pull-back and costs nothing else: the figure is
-   * 1.8 m tall and the whole room already reads at 7.2 m.
-   *
-   * Tinting the background warm (`ENV_COLOR_HEX.background`) hides the seam and is still worth
-   * having as a backstop, but it does not close it — this does.
+   * This was cut to 7.2 m as a workaround while the ORBIT far plane was still the shared 17.5 m
+   * measurement value and the room shell was being clipped. `CAMERA_PRESET_PARAMS.ORBIT.farH` now
+   * carries 14 H = 24.5 m, which clears the whole hall at 9.0 m, so the workaround can go and the
+   * full pull-back comes back.
    */
-  maxDistanceM: 7.2,
+  maxDistanceM: 9.0,
   minPolarAngleRad: 0.15,
   maxPolarAngleRad: 1.52,
 });
@@ -146,6 +134,8 @@ const persp = (
     anchorBone?: BoneName | null;
     followTauS?: number;
     frozen?: boolean;
+    /** Override the shared measurement far plane. Only ORBIT does — see its own note. */
+    farH?: number;
   } = {},
 ): CameraPresetParams => ({
   id,
@@ -155,7 +145,7 @@ const persp = (
   targetH,
   upIsMinusZ: false,
   nearH: NEAR_H,
-  farH: FAR_H,
+  farH: o.farH ?? FAR_H,
   anchorBone: o.anchorBone ?? null,
   followTauS: o.followTauS ?? 0,
   frozen: o.frozen ?? false,
@@ -188,9 +178,29 @@ export const CAMERA_PRESET_PARAMS: Readonly<Record<CameraPresetId, CameraPresetP
      * pelvis XZ at tau = 0.35 s with `y` locked, which is why `anchorBone` is `pelvis` while the
      * figure stays framed across the 3.78 m embusen.
      */
+    /**
+     * ═══ THE ONE PRESET WITH ITS OWN FAR PLANE ═══════════════════════════════════════════════
+     *
+     * Every other camera shares `M_FAR_H = 10` (17.5 m) so that a length read off any of them
+     * lands on the same near/far precision profile — that is a MEASUREMENT requirement and it is
+     * why the constant is frozen. ORBIT measures nothing. It is the interactive camera, and it is
+     * the only one the user can dolly backwards until the room leaves the frustum.
+     *
+     * Measured at the 7.2 m orbit limit, along the view axis: the room shell reaches 18.55 m of
+     * depth and the floor 21.64 m, against a 17.5 m far plane. The shell was being cut, and the
+     * background showed through the gap as a black wedge across the wall — the artefact reported
+     * from several angles. Clamping the orbit could not reach it: closing a 1.05 m gap that way
+     * needs a 6.15 m limit, which frames the hall too tightly to see the kata.
+     *
+     * 14 H = 24.5 m clears the floor's 23.4 m at the restored 9.0 m orbit limit with ~1 m to
+     * spare. Depth precision is unaffected in any way that matters: near stays 0.175 m, so the
+     * far/near ratio goes from 100 to 140 — nowhere near where a 24-bit depth buffer starts to
+     * band.
+     */
     ORBIT: persp('ORBIT', 39.6, [1.6, 0.95, 2.2], [0, 0, 0], {
       anchorBone: 'pelvis',
       followTauS: 0.35,
+      farH: 14,
     }),
     /** The default LOOK. 35 mm equivalent. */
     HERO: persp('HERO', 39.6, [1.6, 0.95, 2.2], ORBIT_TARGET_H),
