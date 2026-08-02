@@ -67,6 +67,9 @@ export interface HudHost {
 export interface Hud {
   /** Mark `index` as current and scroll it into view. Cheap enough to call every beat change. */
   setActive(index: number): void;
+  /** Collapse the panel to its title bar. `undefined` toggles. */
+  setCollapsed(on?: boolean): void;
+  readonly collapsed: boolean;
   /** Re-read `playing` / `solo` from the host. */
   refresh(): void;
   dispose(): void;
@@ -112,6 +115,17 @@ const CSS = `
 .kata-hud__sel{flex:1;min-width:0;appearance:none;background:rgba(255,255,255,.05);color:inherit;
   border:1px solid rgba(255,255,255,.14);border-radius:6px;padding:3px 6px;font:inherit;font-size:11px;cursor:pointer}
 .kata-hud__sel option{background:#14161a;color:#cbd2d9}
+.kata-hud__min{appearance:none;border:1px solid rgba(255,255,255,.14);background:rgba(255,255,255,.05);
+  color:inherit;border-radius:6px;width:22px;height:22px;padding:0;font:inherit;font-size:13px;
+  line-height:1;cursor:pointer;flex:0 0 auto}
+.kata-hud__min:hover{background:rgba(255,255,255,.12)}
+/* Collapsed: the bar survives, everything below it goes. display:none rather than height:0 —
+   a zero-height scroll container still traps the wheel over its footprint. */
+.kata-hud[data-collapsed="1"]{width:auto}
+.kata-hud[data-collapsed="1"] .kata-hud__list,
+.kata-hud[data-collapsed="1"] .kata-hud__legend,
+.kata-hud[data-collapsed="1"] .kata-hud__foot{display:none}
+.kata-hud[data-collapsed="1"] .kata-hud__title{max-width:150px}
 `;
 
 const SCORE_OPTION = '— kata score —';
@@ -133,7 +147,20 @@ export function createHud(host: HudHost, mount: HTMLElement): Hud {
   const playBtn = doc.createElement('button');
   playBtn.className = 'kata-hud__btn';
   playBtn.type = 'button';
-  bar.append(title, playBtn);
+
+  /**
+   * Collapse, because this panel is 29 rows tall and permanently covers the right quarter of the
+   * dojo. The kata travels a 3.4 m x 2.0 m pattern and the camera orbits a full circle, so there
+   * are plenty of angles where the figure is behind the list — and a viewer who just wants to WATCH
+   * has no reason to keep a 29-row index on screen.
+   *
+   * The title bar deliberately survives: collapsing to nothing leaves no affordance to come back,
+   * and the bar is also where the current clip name is displayed.
+   */
+  const minBtn = doc.createElement('button');
+  minBtn.className = 'kata-hud__min';
+  minBtn.type = 'button';
+  bar.append(title, playBtn, minBtn);
 
   /* ── the counts ───────────────────────────────────────────────────────────────────────────── */
   const list = doc.createElement('div');
@@ -218,6 +245,24 @@ export function createHud(host: HudHost, mount: HTMLElement): Hud {
   const transport = host.transport === undefined ? null : createTransport(host.transport, mount);
 
   let active = -1;
+  let collapsed = false;
+
+  function applyCollapsed(): void {
+    if (collapsed) root.dataset['collapsed'] = '1';
+    else delete root.dataset['collapsed'];
+    minBtn.textContent = collapsed ? '+' : '−';
+    minBtn.title = collapsed ? 'show the count list' : 'minimise the count list';
+    minBtn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+    /* Re-run the scroll-into-view that `setActive` skips while hidden: a list expanded after
+     * twenty counts of playback would otherwise open at the top, nowhere near the current one. */
+    if (!collapsed) rows[active]?.scrollIntoView({ block: 'nearest' });
+  }
+
+  minBtn.addEventListener('click', () => {
+    collapsed = !collapsed;
+    applyCollapsed();
+  });
+  applyCollapsed();
 
   function setActive(index: number): void {
     if (index === active) return;
@@ -227,8 +272,10 @@ export function createHud(host: HudHost, mount: HTMLElement): Hud {
     if (next !== undefined) {
       next.dataset['active'] = '1';
       /* `nearest` rather than `center`: while the kata plays this fires every count, and centring
-       * would keep the list in constant motion under the pointer. */
-      next.scrollIntoView({ block: 'nearest' });
+       * would keep the list in constant motion under the pointer. Skipped while collapsed —
+       * scrolling a `display:none` container silently does nothing, and `applyCollapsed` replays
+       * it on expand so the list opens at the count actually being performed. */
+      if (!collapsed) next.scrollIntoView({ block: 'nearest' });
     }
     active = index;
   }
@@ -255,6 +302,13 @@ export function createHud(host: HudHost, mount: HTMLElement): Hud {
 
   return {
     setActive,
+    setCollapsed(on?: boolean): void {
+      collapsed = on ?? !collapsed;
+      applyCollapsed();
+    },
+    get collapsed(): boolean {
+      return collapsed;
+    },
     refresh,
     dispose(): void {
       transport?.dispose();
