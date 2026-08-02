@@ -58,6 +58,7 @@ import {
   easeOutCubic,
   type CameraPresetId,
   type CameraRig,
+  CANONICAL_INDEX,
   type Landmarks,
 } from '../contracts';
 import {
@@ -134,6 +135,27 @@ export interface KataCameraRig extends CameraRig {
   readonly params: CameraPresetParams;
   setSize(width: number, height: number): void;
   dispose(): void;
+
+  /**
+   * HEADING-LOCKED FOLLOW, on the ORBIT camera only.
+   *
+   * ═══ WHAT IT ADDS, GIVEN ORBIT ALREADY FOLLOWS ═══════════════════════════════════════════════
+   *
+   * `update` already TRANSLATES the orbit target and the eye by the same delta, so the figure stays
+   * centred while the user's azimuth, elevation and zoom survive him crossing the embusen. What it
+   * does not do is turn with him — and a kata turns 90°, 180° and 270°, so a camera parked front-on
+   * at count 1 is looking at his back by count 3.
+   *
+   * Enabled, the eye also ORBITS about the target by however much his heading changed, holding your
+   * chosen angle RELATIVE TO HIM. Pick his front-left once and it stays his front-left for the whole
+   * kata.
+   *
+   * Damped rather than rigid on purpose: a 270° turn applied to the camera in one frame is a whip
+   * pan, and following it exactly is nauseating to watch. `FOLLOW_HEADING_TAU_S` lets the camera
+   * lag and settle, which is what a human operator does.
+   */
+  setFollowHeading(on: boolean): void;
+  readonly followHeading: boolean;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════════════════════════
@@ -141,6 +163,54 @@ export interface KataCameraRig extends CameraRig {
  * ═══════════════════════════════════════════════════════════════════════════════════════════════ */
 
 const UP_Y: readonly [number, number, number] = [0, 1, 0];
+
+/**
+ * Time constant for the heading-locked follow, seconds.
+ *
+ * 0.45 s puts roughly 90 % of a turn behind the camera within ~1 s — slower than the figure, which
+ * is the point. A kata's fastest turn is doc 02's `T270` class at 2.05 s, and matching that exactly
+ * would swing the whole room through frame; lagging it reads as an operator turning to keep up.
+ */
+const FOLLOW_HEADING_TAU_S = 0.45;
+
+/** Below this the hip line is too short to have a direction — degenerate landmarks, not a pose. */
+const FOLLOW_MIN_HIP_SPAN_M = 0.02;
+
+/**
+ * The figure's facing, in radians about +Y, read off `Landmarks`.
+ *
+ * ═══ THE HIP LINE, NOT THE FEET, AND NOT THE SHOULDERS ═══════════════════════════════════════
+ *
+ * Feet are the intuitive source and are now WRONG: the foot IK latches a planted foot to a fixed
+ * world position, so a heel-to-toe vector stops rotating with the body while the latch holds.
+ * Measured — rotating the root by exactly 90° moved a foot-derived facing by 133.6°, because one
+ * foot came along and the locked one did not.
+ *
+ * Shoulders are wrong for a different reason: a karateka's shoulders counter-rotate against the
+ * hips, and that counter-rotation IS the technique. A camera driven by them would sway on every
+ * punch.
+ *
+ * The hip line turns when the stance turns and at no other time, and the IK only ever moves the
+ * pelvis vertically, so it survives everything above.
+ */
+function facingFromLandmarks(l: Landmarks): number | null {
+  const iL = CANONICAL_INDEX.LeftUpLeg * 3;
+  const iR = CANONICAL_INDEX.RightUpLeg * 3;
+  /* Right-ward along the hip line, flattened. */
+  const rx = l.pos[iR]! - l.pos[iL]!;
+  const rz = l.pos[iR + 2]! - l.pos[iL + 2]!;
+  if (Math.hypot(rx, rz) < FOLLOW_MIN_HIP_SPAN_M) return null;
+  /* forward = right x up, which for up = +Y is (-rz, 0, rx). */
+  return Math.atan2(-rz, rx);
+}
+
+/** Shortest signed difference `to - from`, in radians. Kata headings wrap through 180°. */
+function shortestAngleRad(from: number, to: number): number {
+  let d = (to - from) % (Math.PI * 2);
+  if (d > Math.PI) d -= Math.PI * 2;
+  if (d < -Math.PI) d += Math.PI * 2;
+  return d;
+}
 /** §5.7: `up = -Z` for `M_TOP` and `EMBUSEN`, the two cameras that look straight down. */
 const UP_MINUS_Z: readonly [number, number, number] = [0, 0, -1];
 
@@ -188,6 +258,12 @@ export function createCameraRig(o: CameraRigOpts = {}): KataCameraRig {
 
   /* Blend state (§5.7: 0.6 s, easeOutCubic on position/target, linear on fov). */
   let blendT = 1;
+  /** Heading-locked follow, ORBIT only. See `setFollowHeading`. */
+  let followHeading = false;
+  /** The figure's facing last frame; `null` until the first usable reading. */
+  let lastFacingRad: number | null = null;
+  /** Turn the figure has made that the camera has not caught up with yet, radians. */
+  let pendingYawRad = 0;
   const fromPos = new Vector3();
   const fromAim = new Vector3();
   let fromFov = persp.fov;
@@ -370,6 +446,38 @@ export function createCameraRig(o: CameraRigOpts = {}): KataCameraRig {
           controls.target.add(_delta);
           persp.position.add(_delta);
         }
+
+        /* ── heading lock: orbit the eye by however much HE turned ──────────────────────────
+         *
+         * Translation above keeps him centred; this keeps him at the same ANGLE. The turn is
+         * accumulated and released through a first-order lag rather than applied outright, so a
+         * 180° count does not whip the room through frame in one step. `pendingYawRad` is the
+         * debt: it holds whatever the camera still owes, so no rotation is ever dropped, only
+         * deferred. */
+        if (followHeading) {
+          const facing = facingFromLandmarks(landmarks);
+          if (facing !== null) {
+            if (lastFacingRad !== null) {
+              pendingYawRad += shortestAngleRad(lastFacingRad, facing);
+            }
+            lastFacingRad = facing;
+          }
+          if (dt > 0 && Math.abs(pendingYawRad) > 1e-6) {
+            const step = pendingYawRad * (1 - Math.exp(-dt / FOLLOW_HEADING_TAU_S));
+            pendingYawRad -= step;
+            const ox = persp.position.x - controls.target.x;
+            const oz = persp.position.z - controls.target.z;
+            const c = Math.cos(step);
+            const sn = Math.sin(step);
+            /* +`step` about +Y. With azimuth read as `atan2(x, z)`, the pair below advances it BY
+             * `step`; the transposed pair retards it, which is the sign this first shipped with —
+             * the camera turned the wrong way out of every count. */
+            persp.position.x = controls.target.x + (ox * c + oz * sn);
+            persp.position.z = controls.target.z + (oz * c - ox * sn);
+            viewChanged();
+          }
+        }
+
         aim.copy(controls.target);
         controls.update(dt);
         return;
@@ -382,6 +490,19 @@ export function createCameraRig(o: CameraRigOpts = {}): KataCameraRig {
       current.position.copy(_pos);
       aim.copy(_target);
       current.lookAt(aim);
+    },
+
+    setFollowHeading(on: boolean): void {
+      if (on === followHeading) return;
+      followHeading = on;
+      /* Re-seed rather than carry a stale reading across the gap: while OFF the figure keeps
+       * turning, and a difference measured against a facing from thirty seconds ago would spin the
+       * camera on the frame it is switched back on. */
+      lastFacingRad = lastLandmarks === null ? null : facingFromLandmarks(lastLandmarks);
+      pendingYawRad = 0;
+    },
+    get followHeading(): boolean {
+      return followHeading;
     },
 
     setSize(width, height): void {

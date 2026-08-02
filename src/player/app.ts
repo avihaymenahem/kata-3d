@@ -159,6 +159,8 @@ export interface StageBootOpts {
   readonly onClipChange?: (name: string, index: number, total: number) => void;
   /** Fired when the kata advances to a new count or ceremony phase. */
   readonly onBeatChange?: (label: string, kiai: boolean, index: number) => void;
+  /** Fired when the heading-locked follow camera is toggled, so a HUD can reflect it. */
+  readonly onFollowCamChange?: (on: boolean) => void;
   /** Open on the score-driven kata instead of the continuous capture. `?view=score` sets it. */
   readonly scoreView?: boolean;
   /** Which clip the continuous view opens on. Defaults to the retargeted Shotokan capture. */
@@ -302,6 +304,13 @@ export interface StageBoot {
   soloClip(name: string | null): void;
   /** The clip being auditioned, or `null` when the score is driving. */
   readonly solo: string | null;
+
+  /**
+   * Heading-locked follow on the ORBIT camera: hold the chosen angle RELATIVE to the karateka as he
+   * turns, instead of only tracking his position. `f` toggles it. See `KataCameraRig.setFollowHeading`.
+   */
+  setFollowCam(on?: boolean): void;
+  readonly followCam: boolean;
 
   /* ── frame-accurate transport, over WHICHEVER view is on screen ─────────────────────────────
    *
@@ -864,6 +873,7 @@ export async function bootStage(o: StageBootOpts): Promise<StageBoot> {
   };
 
   const onClipChange = o.onClipChange;
+  const onFollowCamChange = o.onFollowCamChange;
   let measurementCursor = 0;
   const onKeyDown = (e: KeyboardEvent): void => {
     if (e.metaKey || e.ctrlKey || e.altKey) return;
@@ -884,6 +894,15 @@ export async function bootStage(o: StageBootOpts): Promise<StageBoot> {
       return;
     }
     if (k === 'r' || k === 'R') setCameraPreset('ORBIT', true);
+    if (k === 'f' || k === 'F') {
+      /* Heading lock only means anything on ORBIT — every other preset is a fixed measurement
+       * camera — so switch there rather than silently toggling a flag with no visible effect. */
+      if (cameraRig.active !== 'ORBIT') setCameraPreset('ORBIT', true);
+      cameraRig.setFollowHeading(!cameraRig.followHeading);
+      onFollowCamChange?.(cameraRig.followHeading);
+      markInteraction();
+      return;
+    }
 
     /* `,` / `.` step one display frame, the keys every NLE and every video player binds to exactly
      * this. Bound BEFORE the score block on purpose: they are the one transport that has to work
@@ -986,6 +1005,16 @@ export async function bootStage(o: StageBootOpts): Promise<StageBoot> {
     landmarks,
     transport,
     setCameraPreset,
+    setFollowCam(on?: boolean): void {
+      const want = on ?? !cameraRig.followHeading;
+      if (want && cameraRig.active !== 'ORBIT') setCameraPreset('ORBIT', true);
+      cameraRig.setFollowHeading(want);
+      onFollowCamChange?.(cameraRig.followHeading);
+      markInteraction();
+    },
+    get followCam(): boolean {
+      return cameraRig.followHeading;
+    },
 
     goToBeat(index: number): void {
       if (choreography === null) return;
