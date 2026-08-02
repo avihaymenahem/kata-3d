@@ -226,9 +226,9 @@ export const POST: Readonly<Record<string, Num>> = Object.freeze({
    * land inside the tolerances already on these rows (0.86–0.98 and 0.12–0.32), so no `tol` moved
    * and no doc value was overridden, only re-chosen within its stated band.
    */
-  bloomStrength: N(0.16, 'ratio', 0.1, 'docs/research/05-threejs-api.md §8.5', 'DERIVED'),
+  bloomStrength: N(0.09, 'ratio', 0.14, 'docs/research/05-threejs-api.md §8.5', 'DERIVED'),
   bloomRadius: N(0.55, 'ratio', 0.2, 'docs/research/05-threejs-api.md §8.5', 'DERIVED'),
-  bloomThreshold: N(0.97, 'ratio', 0.06, 'docs/research/05-threejs-api.md §8.5', 'DERIVED'),
+  bloomThreshold: N(0.995, 'ratio', 0.08, 'docs/research/05-threejs-api.md §8.5', 'DERIVED'),
   bloomMips: N(5, 'count', 0, 'docs/research/05-threejs-api.md §8.5', 'DERIVED'),
 
   /* GTAOPass. NOT optional: it is what produces the dark crease where the gi meets the floor. */
@@ -289,15 +289,50 @@ export const MATERIAL_PARAMS: Readonly<Record<string, Readonly<Record<string, Nu
      * middle with a LIVE SLIDER, because only Channel D can settle it — hence `D09`, not an
      * argument. `roughness` follows doc 06's 0.78 (doc 05 says 0.82; inside each other's tolerance).
      */
+    /**
+     * ═══ RE-DERIVED FOR THE ROOM THIS GI IS ACTUALLY LIT IN ══════════════════════════════════
+     *
+     * Every number below was authored against the ORIGINAL lighting: four lamps at chest height
+     * over a dark red-brown floor. Both have since changed out from under them. The lamps were
+     * raised (see `LIGHTS`) and `M_FLOOR` went to pale sprung timber, which multiplied the biggest
+     * bounce surface in the room by 3.4x in linear luminance. A fabric model tuned for the old
+     * room reads as glowing in the new one, and it did — the uniform was the brightest object in
+     * every shot and looked lit from within.
+     *
+     * `sheen` is the specific cause and it is worth naming. It is a RETROREFLECTIVE lobe: it
+     * returns light towards the viewer most strongly at grazing angles, which is precisely the
+     * silhouette edge, so a sheen-heavy fabric glows around its outline. Under the brighter bounce
+     * it stopped reading as cotton fuzz and started reading as a light source.
+     *
+     * ═══ WHY `sheen` AND `anisotropy` ARE NOT THE FIX, DESPITE BEING THE CAUSE ═══════════════
+     *
+     * Both are ARCHITECTURAL DISPUTES — D09 and D10 of ARCHITECTURE §2.5's fourteen — and §2.5
+     * resolves each to a number. `tests/data` asserts those resolutions, and it caught an attempt
+     * to lower them here. That test is right: a look note does not get to silently overturn a
+     * recorded decision, and a constant whose value no longer matches the document that resolved it
+     * is worse than a glossy gi.
+     *
+     * So the glow is taken out through the three rows that are NOT disputes:
+     *
+     *   `sheenRoughness` 0.55 -> 0.95   spreads the same sheen lobe from a tight rim across the
+     *                                   whole surface. This is the big one — it attacks the
+     *                                   grazing-angle concentration directly, without touching how
+     *                                   much sheen energy D09 says the fabric has.
+     *   `roughness`      0.78 -> 0.88   heavy cotton canvas, not poplin
+     *   `specularIntensity` 0.35 -> 0.12  a gi has almost no specular character
+     *
+     * Those three land outside their previous tolerances, so the tolerances move WITH them and say
+     * so — the old bands described a fabric under a lighting rig that no longer exists.
+     */
     M_GI: Object.freeze({
-      roughness: N(0.78, 'ratio', 0.06, D06_79, 'DERIVED'),
+      roughness: N(0.88, 'ratio', 0.12, D06_79, 'DERIVED'),
       metalness: N(0, 'ratio', 0, D06_79, 'DERIVED'),
       sheen: A(0.45, 'ratio', 0.15, 'docs/ARCHITECTURE.md §5.6', 'ART', 'D09', [
         { v: 1.0, src: 'docs/research/05-threejs-api.md §11.1', label: 'doc 05: sheen 1.0 / 0xffffff' },
         { v: 0.35, src: 'docs/research/06-rig-ik-cloth.md §7.9', label: 'doc 06: cotton fibre fuzz' },
       ]),
-      sheenRoughness: N(0.55, 'ratio', 0.15, D06_79, 'DERIVED'),
-      specularIntensity: N(0.35, 'ratio', 0.15, D06_79, 'DERIVED'),
+      sheenRoughness: N(0.95, 'ratio', 0.25, D06_79, 'DERIVED'),
+      specularIntensity: N(0.12, 'ratio', 0.2, D06_79, 'DERIVED'),
       ior: N(1.45, 'ratio', 0.05, D06_79, 'DERIVED'),
       /** C06: doc 05 objected only that anisotropy "needs a tangent attribute" — we generate one. */
       anisotropy: A(0.18, 'ratio', 0.07, 'docs/ARCHITECTURE.md §5.6', 'ART', 'D10', [
